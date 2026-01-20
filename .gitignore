@@ -59,11 +59,13 @@ open_spiel/cmake-build-debug/
 Package.resolved
 
 # SLURM
-slurm*.out
-run_*.sh
+slurm_output/
 
 # Cursor
 .cache
 
 # Analysis
 analysis*.txt
+
+# Clangd
+.clangd

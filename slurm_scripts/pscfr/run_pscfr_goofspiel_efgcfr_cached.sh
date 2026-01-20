@@ -1,5 +1,7 @@
 #!/bin/bash
-#SBATCH --partition=amdfast
+#SBATCH --partition=amd
+#SBATCH --time=24:00:00
+#SBATCH --mem=64G
 
 # RCI cluster modules
 ml Clang/12.0.1-GCCcore-10.3.0
@@ -11,11 +13,5 @@ ml typing-extensions/3.10.0.0-GCCcore-10.3.0
 ml protobuf-python/3.17.3-GCCcore-10.3.0
 ml matplotlib/3.4.2-foss-2021a
 
-rm -r open_spiel/build
-mkdir open_spiel/build
-cd open_spiel/build
-
-OPEN_SPIEL_BUILD_WITH_ACPC=ON OPEN_SPIEL_BUILD_WITH_LIBNOP=ON OPEN_SPIEL_BUILD_WITH_PAPERS=ON OPEN_SPIEL_BUILD_WITH_PYTHON=ON OPEN_SPIEL_BUILD_WITH_ORTOOLS=ON cmake ..
-
-make my_main
+./open_spiel/build/papers_with_code/public_state_cfr/my_main -efgcfr_cached -game_name=goofspiel7 --iterations=1000
 
