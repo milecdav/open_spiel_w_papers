@@ -316,13 +316,10 @@ class CFRSolverBase {
   // will disable this feature. Otherwise it should be a [num_players] vector,
   // and if `policy_overrides[p] != nullptr` it will be used instead of the
   // current policy. This feature exists to support CFR-BR.
+  // Template supports both State and CfrState.
+  template <typename StateType>
   std::vector<double> ComputeCounterFactualRegret(
-      CfrState &state, const absl::optional<int> &alternating_player,
-      const std::vector<double>& reach_probabilities,
-      const std::vector<const Policy*>* policy_overrides);
-
-  std::vector<double> ComputeCounterFactualRegret(
-      const State &state, const absl::optional<int> &alternating_player,
+      StateType& state, const absl::optional<int>& alternating_player,
       const std::vector<double>& reach_probabilities,
       const std::vector<const Policy*>* policy_overrides);
 
@@ -338,16 +335,10 @@ class CFRSolverBase {
   }
 
  private:
+  // Template supports both State and CfrState.
+  template <typename StateType>
   std::vector<double> ComputeCounterFactualRegretForActionProbs(
-      CfrState& state, const absl::optional<int>& alternating_player,
-      const std::vector<double>& reach_probabilities, const int current_player,
-      const std::vector<double>& info_state_policy,
-      const std::vector<Action>& legal_actions,
-      std::vector<double>* child_values_out,
-      const std::vector<const Policy*>* policy_overrides);
-
-  std::vector<double> ComputeCounterFactualRegretForActionProbs(
-      const State& state, const absl::optional<int>& alternating_player,
+      StateType& state, const absl::optional<int>& alternating_player,
       const std::vector<double>& reach_probabilities, const int current_player,
       const std::vector<double>& info_state_policy,
       const std::vector<Action>& legal_actions,
