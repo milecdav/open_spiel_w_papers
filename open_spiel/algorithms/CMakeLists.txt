@@ -68,6 +68,8 @@ add_library (algorithms OBJECT
   outcome_sampling_mccfr.h
   policy_iteration.cc
   policy_iteration.h
+  rnr.cc
+  rnr.h
   state_distribution.cc
   state_distribution.h
   tabular_best_response_mdp.cc
@@ -176,6 +178,10 @@ add_test(oos_test oos_test)
 add_executable(outcome_sampling_mccfr_test outcome_sampling_mccfr_test.cc
     $<TARGET_OBJECTS:algorithms> ${OPEN_SPIEL_OBJECTS})
 add_test(outcome_sampling_mccfr_test outcome_sampling_mccfr_test)
+
+add_executable(rnr_test rnr_test.cc
+    $<TARGET_OBJECTS:algorithms> ${OPEN_SPIEL_OBJECTS})
+add_test(rnr_test rnr_test)
 
 add_executable(state_distribution_test state_distribution_test.cc
     $<TARGET_OBJECTS:algorithms> ${OPEN_SPIEL_OBJECTS})

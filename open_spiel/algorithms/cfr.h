@@ -302,6 +302,17 @@ class CFRSolverBase {
   std::shared_ptr<CfrState> cfr_root_state_;
   const std::unique_ptr<State> root_state_;
   const std::vector<double> root_reach_probs_;
+  const bool regret_matching_plus_;
+  const bool alternating_updates_;
+  const bool linear_averaging_;
+  const bool random_initial_regrets_;
+
+  // CFR generally does not use this random number generator. However, this is
+  // used for random initial regrets (and could be useful for some helper
+  // methods for debugging).
+  std::mt19937 rng_;
+
+  const int chance_player_;
 
   // Variables for state saving to speed up the computation
   bool save_states_;
@@ -334,6 +345,23 @@ class CFRSolverBase {
     SpielFatalError("Serialization of the base class is not supported.");
   }
 
+  // Get the policy at this information state. The probabilities are ordered in
+  // the same order as legal_actions.
+  std::vector<double> GetPolicy(const std::string& info_state,
+    const std::vector<Action>& legal_actions);
+
+  bool AllPlayersHaveZeroReachProb(
+    const std::vector<double>& reach_probabilities) const;
+
+  // Fills `info_state_policy` to be a [num_actions] vector of the probabilities
+  // found in `policy` at the given `info_state`.
+  void GetInfoStatePolicyFromPolicy(std::vector<double>* info_state_policy,
+    const std::vector<Action>& legal_actions,
+    const Policy* policy,
+    const std::string& info_state) const;
+
+  void ApplyRegretMatchingPlusReset();
+
  private:
   // Template supports both State and CfrState.
   template <typename StateType>
@@ -347,37 +375,8 @@ class CFRSolverBase {
 
   void InitializeInfostateNodes(const State& state, CfrState& cfr_state);
 
-  // Fills `info_state_policy` to be a [num_actions] vector of the probabilities
-  // found in `policy` at the given `info_state`.
-  void GetInfoStatePolicyFromPolicy(std::vector<double>* info_state_policy,
-                                    const std::vector<Action>& legal_actions,
-                                    const Policy* policy,
-                                    const std::string& info_state) const;
-
-  // Get the policy at this information state. The probabilities are ordered in
-  // the same order as legal_actions.
-  std::vector<double> GetPolicy(const std::string& info_state,
-                                const std::vector<Action>& legal_actions);
-
-  void ApplyRegretMatchingPlusReset();
-
   std::vector<double> RegretMatching(const std::string& info_state,
                                      const std::vector<Action>& legal_actions);
-
-  bool AllPlayersHaveZeroReachProb(
-      const std::vector<double>& reach_probabilities) const;
-
-  const bool regret_matching_plus_;
-  const bool alternating_updates_;
-  const bool linear_averaging_;
-  const bool random_initial_regrets_;
-
-  const int chance_player_;
-
-  // CFR generally does not use this random number generator. However, this is
-  // used for random initial regrets (and could be useful for some helper
-  // methods for debugging).
-  std::mt19937 rng_;
 };
 
 // Standard CFR implementation.
