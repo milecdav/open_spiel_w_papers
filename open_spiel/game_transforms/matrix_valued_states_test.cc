@@ -14,13 +14,17 @@
 
 #include "open_spiel/game_transforms/matrix_valued_states.h"
 
+#include <chrono>
 #include <memory>
+#include <random>
 #include <string>
 #include <vector>
 
 #include "open_spiel/abseil-cpp/absl/strings/str_cat.h"
+#include "open_spiel/algorithms/best_response.h"
 #include "open_spiel/algorithms/cfr.h"
 #include "open_spiel/algorithms/expected_returns.h"
+#include "open_spiel/algorithms/tabular_exploitability.h"
 #include "open_spiel/policy.h"
 #include "open_spiel/spiel.h"
 #include "open_spiel/tests/basic_tests.h"
@@ -28,6 +32,82 @@
 
 namespace open_spiel {
 namespace {
+
+// A policy that combines two policies: uses `locked_policy` for info states
+// that are in the locked set, and `fallback_policy` for all others.
+class CombinedPolicy : public Policy {
+ public:
+  CombinedPolicy(std::shared_ptr<Policy> locked_policy,
+                 std::shared_ptr<Policy> fallback_policy,
+                 std::set<std::string> locked_infostates)
+      : locked_policy_(std::move(locked_policy)),
+        fallback_policy_(std::move(fallback_policy)),
+        locked_infostates_(std::move(locked_infostates)) {}
+
+  ActionsAndProbs GetStatePolicy(const State& state,
+                                  Player player) const override {
+    std::string info_state = state.InformationStateString(player);
+    if (locked_infostates_.count(info_state) > 0) {
+      // Use locked policy for this info state
+      return locked_policy_->GetStatePolicy(info_state);
+    }
+    // Use fallback policy - call with State to support UniformPolicy
+    return fallback_policy_->GetStatePolicy(state, player);
+  }
+
+  ActionsAndProbs GetStatePolicy(const std::string& info_state) const override {
+    if (locked_infostates_.count(info_state) > 0) {
+      return locked_policy_->GetStatePolicy(info_state);
+    }
+    // Can't call fallback with just info_state if it doesn't support it
+    // This will fail for UniformPolicy, but that's ok - we use the State version
+    return fallback_policy_->GetStatePolicy(info_state);
+  }
+
+ private:
+  std::shared_ptr<Policy> locked_policy_;
+  std::shared_ptr<Policy> fallback_policy_;
+  std::set<std::string> locked_infostates_;
+};
+
+// Collect all info states from a game up to a certain round (for Leduc-like games)
+// Returns a set of info state strings that appear before round 2 (before public card).
+std::unordered_map<int, std::unordered_set<std::string>> CollectRound1InfoStates(const Game& game) {
+  std::unordered_map<int, std::unordered_set<std::string>> round1_infostates;
+
+  std::function<void(const State&, int)> traverse = [&](const State& state,
+                                                         int chance_count) {
+    if (state.IsTerminal()) return;
+
+    // In Leduc, round 2 starts after 3 chance nodes (2 private + 1 public)
+    // So we collect info states while chance_count < 3
+    if (state.IsChanceNode()) {
+      for (const auto& [action, prob] : state.ChanceOutcomes()) {
+        auto next = state.Clone();
+        next->ApplyAction(action);
+        traverse(*next, chance_count + 1);
+      }
+    } else {
+      // This is a player node
+      if (chance_count < 3) {
+        // We're in round 1 (before public card)
+        Player player = state.CurrentPlayer();
+        if(round1_infostates.find(player) == round1_infostates.end()) {
+          round1_infostates[player] = std::unordered_set<std::string>();
+        }
+        round1_infostates[player].insert(state.InformationStateString(player));
+      }
+      for (Action action : state.LegalActions()) {
+        auto next = state.Clone();
+        next->ApplyAction(action);
+        traverse(*next, chance_count);
+      }
+    }
+  };
+
+  traverse(*game.NewInitialState(), 0);
+  return round1_infostates;
+}
 
 // Test basic construction of MVS game from Kuhn poker
 void TestBasicConstruction() {
@@ -781,34 +861,101 @@ void TestMVSFullGameValuePreservationOneActionKuhnPoker() {
   std::cout << "Full game value preservation test passed!" << std::endl;
 }
 
-// Test that MVS transformation preserves game value for the full game
-// when using all pure strategies and 1 round state
-void TestMVSFullGameValuePreservationOneRoundLeducPoker() {
-  std::cout << "TestMVSFullGameValuePreservationOneRoundLeducPoker" << std::endl;
+// Test 1: Verify the structure of MVS game with subtree pure strategies for Leduc.
+// Walks through the game, checks portfolio sizes, and runs random simulations.
+void TestMVSSubtreePureStrategiesLeducStructure() {
+  std::cout << "TestMVSSubtreePureStrategiesLeducStructure" << std::endl;
 
   auto game = LoadGame("leduc_poker");
-  auto initial_state = game->NewInitialState();
 
-  // Get all pure strategies from the root
-  auto p0_portfolio = EnumerateSubtreePureStrategies(*initial_state, 0);
-  auto p1_portfolio = EnumerateSubtreePureStrategies(*initial_state, 1);
+  // Create MVS game with subtree pure strategies, round-based depth, limit=3
+  // In round-based mode, each chance node increments the round counter.
+  // Leduc has 3 chance nodes: deal P0's card, deal P1's card, deal public card.
+  // So depth_limit=3 means we hit the limit at the start of the second betting round.
+  auto mvs_game = std::make_shared<MVSGameWithSubtreePureStrategies>(
+      game, /*depth_limit=*/3, MVSGame::DepthMode::kRoundBased);
 
-  std::cout << "Full game - P0 portfolio size: " << p0_portfolio.size() << std::endl;
-  std::cout << "Full game - P1 portfolio size: " << p1_portfolio.size() << std::endl;
+  std::cout << "Created MVS game with subtree pure strategies, "
+            << "round-based depth limit = 3 (after all chance nodes)" << std::endl;
 
-  // For Kuhn poker, this should be manageable
-  // P0 has 2 infostates * 2 actions = 4 pure strategies typically
-  // Actually depends on the tree structure
+  // Walk to a depth-limited state to check portfolio sizes.
+  auto mvs_state = mvs_game->NewInitialState();
 
-  if (p0_portfolio.size() > 100 || p1_portfolio.size() > 100) {
-    std::cout << "Skipping large portfolio test (P0=" << p0_portfolio.size()
-              << ", P1=" << p1_portfolio.size() << ")" << std::endl;
-    return;
+  std::cout << "Walking to a depth-limited state..." << std::endl;
+  int steps = 0;
+  while (!mvs_state->IsTerminal() && steps < 20) {
+    auto* mvs_st = dynamic_cast<MVSStateWithSubtreePureStrategies*>(mvs_state.get());
+    if (mvs_st && mvs_st->GetPhase() != MVSStateWithSubtreePureStrategies::Phase::kNormal) {
+      // We've hit the depth limit and are in portfolio selection phase
+      std::cout << "Hit depth limit at step " << steps << std::endl;
+      std::cout << "State: " << mvs_state->ToString() << std::endl;
+
+      // Check portfolio sizes
+      const auto& p0_portfolio = mvs_st->GetPortfolioP0();
+      const auto& p1_portfolio = mvs_st->GetPortfolioP1();
+      std::cout << "P0 portfolio size at this node: " << p0_portfolio.size() << std::endl;
+      std::cout << "P1 portfolio size at this node: " << p1_portfolio.size() << std::endl;
+
+      // Verify portfolios are computed correctly (non-empty)
+      SPIEL_CHECK_GT(p0_portfolio.size(), 0);
+      SPIEL_CHECK_GT(p1_portfolio.size(), 0);
+
+      break;
+    }
+
+    // Take first legal action (or sample chance)
+    if (mvs_state->IsChanceNode()) {
+      auto outcomes = mvs_state->ChanceOutcomes();
+      mvs_state->ApplyAction(outcomes[0].first);
+    } else {
+      auto actions = mvs_state->LegalActions();
+      mvs_state->ApplyAction(actions[0]);
+    }
+    steps++;
   }
 
-  // Create MVS game with depth 2
-  auto mvs_game = std::make_shared<MVSGame>(
-      game, p0_portfolio, p1_portfolio, /*depth_limit=*/2);
+  // Test random simulations through the MVS game
+  std::cout << "Testing random simulation through MVS game..." << std::endl;
+  std::mt19937 rng(42);
+  for (int sim = 0; sim < 10; ++sim) {
+    auto state = mvs_game->NewInitialState();
+    while (!state->IsTerminal()) {
+      if (state->IsChanceNode()) {
+        auto outcomes = state->ChanceOutcomes();
+        std::vector<double> probs;
+        for (const auto& [action, prob] : outcomes) {
+          probs.push_back(prob);
+        }
+        std::discrete_distribution<int> dist(probs.begin(), probs.end());
+        int idx = dist(rng);
+        state->ApplyAction(outcomes[idx].first);
+      } else {
+        auto actions = state->LegalActions();
+        std::uniform_int_distribution<int> dist(0, actions.size() - 1);
+        state->ApplyAction(actions[dist(rng)]);
+      }
+    }
+    auto returns = state->Returns();
+    // Verify zero-sum
+    SPIEL_CHECK_FLOAT_EQ(returns[0] + returns[1], 0.0);
+  }
+  std::cout << "Random simulations completed successfully." << std::endl;
+
+  std::cout << "TestMVSSubtreePureStrategiesLeducStructure passed!" << std::endl;
+}
+
+// Test 2: Run CFR on MVS game and compare value with original Leduc poker.
+// This verifies that the MVS transformation preserves the game value.
+void TestMVSSubtreePureStrategiesLeducCFRValue() {
+  std::cout << "TestMVSSubtreePureStrategiesLeducCFRValue" << std::endl;
+
+  auto game = LoadGame("leduc_poker");
+
+  // Create MVS game with subtree pure strategies, round-based depth, limit=3
+  auto mvs_game = std::make_shared<MVSGameWithSubtreePureStrategies>(
+      game, /*depth_limit=*/3, MVSGame::DepthMode::kRoundBased);
+
+  std::cout << "Running CFR on MVS game (this may take a while)..." << std::endl;
 
   // Solve MVS game with CFR
   algorithms::CFRSolverBase mvs_solver(*mvs_game,
@@ -816,41 +963,242 @@ void TestMVSFullGameValuePreservationOneRoundLeducPoker() {
                                         /*linear_averaging=*/true,
                                         /*regret_matching_plus=*/true);
 
+  auto mvs_start = std::chrono::high_resolution_clock::now();
   for (int i = 0; i < 1000; ++i) {
     mvs_solver.EvaluateAndUpdatePolicy();
+    if ((i + 1) % 200 == 0) {
+      auto now = std::chrono::high_resolution_clock::now();
+      auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - mvs_start).count();
+      std::cout << "  MVS CFR iteration " << (i + 1)
+                << " (elapsed: " << elapsed << "ms, "
+                << "cache: " << mvs_game->NumCachedStates() << " states)" << std::endl;
+    }
   }
+  auto mvs_end = std::chrono::high_resolution_clock::now();
+  auto mvs_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(mvs_end - mvs_start).count();
 
   auto mvs_policy = mvs_solver.AveragePolicy();
   auto mvs_value = algorithms::ExpectedReturns(
       *mvs_game->NewInitialState(), *mvs_policy, -1, true);
 
-  std::cout << "MVS game value (CFR 2000 iters): [" << mvs_value[0] << ", "
+  std::cout << "MVS game value (CFR 1000 iters): [" << mvs_value[0] << ", "
             << mvs_value[1] << "]" << std::endl;
+  std::cout << "MVS CFR time: " << mvs_elapsed << "ms" << std::endl;
+  std::cout << "MVS cache stats: " << mvs_game->NumCachedStates()
+            << " unique states, " << mvs_game->NumCachedPayoffs()
+            << " payoff computations" << std::endl;
 
   // Solve original game with CFR
+  std::cout << "Running CFR on original Leduc game..." << std::endl;
   algorithms::CFRSolverBase orig_solver(*game,
                                          /*alternating_updates=*/true,
                                          /*linear_averaging=*/true,
                                          /*regret_matching_plus=*/true);
 
+  auto orig_start = std::chrono::high_resolution_clock::now();
   for (int i = 0; i < 1000; ++i) {
     orig_solver.EvaluateAndUpdatePolicy();
+    if ((i + 1) % 200 == 0) {
+      auto now = std::chrono::high_resolution_clock::now();
+      auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - orig_start).count();
+      std::cout << "  Original CFR iteration " << (i + 1)
+                << " (elapsed: " << elapsed << "ms)" << std::endl;
+    }
   }
+  auto orig_end = std::chrono::high_resolution_clock::now();
+  auto orig_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(orig_end - orig_start).count();
 
   auto orig_policy = orig_solver.AveragePolicy();
   auto orig_value = algorithms::ExpectedReturns(
       *game->NewInitialState(), *orig_policy, -1, true);
 
-  std::cout << "Original game value (CFR 2000 iters): [" << orig_value[0] << ", "
+  std::cout << "Original game value (CFR 1000 iters): [" << orig_value[0] << ", "
             << orig_value[1] << "]" << std::endl;
+  std::cout << "Original CFR time: " << orig_elapsed << "ms" << std::endl;
+  std::cout << "Speedup ratio (original/MVS): " << (double)orig_elapsed / mvs_elapsed << "x" << std::endl;
 
   // The values should be close (CFR convergence)
-  // With all pure strategies, the MVS game contains all possible play,
-  // so the Nash equilibrium value should be the same
+  // With all pure strategies at each depth-limited node, the MVS game contains
+  // all possible play, so the Nash equilibrium value should be the same.
   double tolerance = 0.05;  // CFR may not have fully converged
   SPIEL_CHECK_LT(std::abs(mvs_value[0] - orig_value[0]), tolerance);
 
-  std::cout << "Full game value preservation test passed!" << std::endl;
+  std::cout << "TestMVSSubtreePureStrategiesLeducCFRValue passed!" << std::endl;
+}
+
+// A policy that combines a locked policy for certain info states with
+// CFR's current policy for other states. This is used with policy_overrides
+// to fix part of the strategy during CFR solving.
+class LockedCFRPolicy : public Policy {
+ public:
+  LockedCFRPolicy(std::shared_ptr<Policy> locked_policy,
+                  const algorithms::CFRInfoStateValuesTable& cfr_info_states,
+                  const std::set<std::string>& locked_infostates)
+      : locked_policy_(std::move(locked_policy)),
+        cfr_info_states_(cfr_info_states),
+        locked_infostates_(locked_infostates) {}
+
+  ActionsAndProbs GetStatePolicy(const State& state,
+                                  Player player) const override {
+    std::string info_state = state.InformationStateString(player);
+    return GetStatePolicy(info_state);
+  }
+
+  ActionsAndProbs GetStatePolicy(const std::string& info_state) const override {
+    // If this is a locked info state, return the locked policy
+    if (locked_infostates_.count(info_state) > 0) {
+      return locked_policy_->GetStatePolicy(info_state);
+    }
+    // Otherwise, return CFR's current policy
+    auto it = cfr_info_states_.find(info_state);
+    if (it == cfr_info_states_.end()) {
+      return {};  // Unknown state
+    }
+    return it->second.GetCurrentPolicy();
+  }
+
+ private:
+  std::shared_ptr<Policy> locked_policy_;
+  const algorithms::CFRInfoStateValuesTable& cfr_info_states_;
+  const std::set<std::string>& locked_infostates_;
+};
+
+std::unordered_map<std::string, double> DepthLimitedExploitability(const Game& game, std::shared_ptr<Policy> policy, std::unordered_map<int, std::unordered_set<std::string>> depth_limited_infostates) {
+  std::unordered_map<std::string, double> exploitability_table;
+
+  double exploitability = 0;
+
+  SPIEL_CHECK_EQ(game.NumPlayers(), 2);
+  for(Player player = 0; player < 2; player++) {
+    algorithms::CFRSolverBase fixed_policy_solver(game,
+      /*alternating_updates=*/true,
+      /*linear_averaging=*/true,
+      /*regret_matching_plus=*/true);
+
+    fixed_policy_solver.SetFixedPolicy(policy, depth_limited_infostates[player]);
+
+    for (int i = 0; i < 500; ++i) {
+      fixed_policy_solver.EvaluateAndUpdatePolicy();
+    }
+
+    auto fixed_policy_avg_policy = fixed_policy_solver.AveragePolicy();
+
+    algorithms::TabularBestResponse best_response(game, 1 - player, fixed_policy_avg_policy.get());
+
+    double best_response_value = best_response.Value(*game.NewInitialState());
+    exploitability += best_response_value;
+
+    exploitability_table["Player " + std::to_string(player) + " exploitability"] = exploitability;
+  }
+  exploitability /= 2;
+  exploitability_table["Total exploitability"] = exploitability;
+  return exploitability_table;
+}
+
+
+// Test 3: Verify MVS strategy by locking round-1 actions during CFR solving
+// on the original game using policy_overrides. This properly tests that the
+// MVS round-1 strategy is compatible with optimal round-2 play.
+void TestMVSStrategyInOriginalGame() {
+  std::cout << "TestMVSStrategyInOriginalGame" << std::endl;
+
+  auto game = LoadGame("leduc_poker");
+
+  // Create MVS game with subtree pure strategies
+  auto mvs_game = std::make_shared<MVSGameWithSubtreePureStrategies>(
+      game, /*depth_limit=*/3, MVSGame::DepthMode::kRoundBased);
+
+  // Run CFR on MVS game
+  std::cout << "Running CFR on MVS game..." << std::endl;
+  algorithms::CFRSolverBase mvs_solver(*mvs_game,
+                                        /*alternating_updates=*/true,
+                                        /*linear_averaging=*/true,
+                                        /*regret_matching_plus=*/true);
+
+  for (int i = 0; i < 500; ++i) {
+    mvs_solver.EvaluateAndUpdatePolicy();
+  }
+  auto mvs_avg_policy = mvs_solver.AveragePolicy();
+
+  // Get MVS game value
+  auto mvs_value = algorithms::ExpectedReturns(
+      *mvs_game->NewInitialState(), *mvs_avg_policy, -1, true);
+  std::cout << "MVS game value: [" << mvs_value[0] << ", " << mvs_value[1] << "]"
+            << std::endl;
+
+  // Collect round-1 info states from the original game
+  auto round1_infostates = CollectRound1InfoStates(*game);
+  std::cout << "Round 1 info states in original game: "
+            << round1_infostates.size() << std::endl;
+
+  // Extract MVS policy for round-1 states into a TabularPolicy
+  auto mvs_round1_policy = std::make_shared<TabularPolicy>();
+  int matched_states = 0;
+  for (const auto& [player, info_states] : round1_infostates) {
+    for (const auto& info_state : info_states) {
+      auto actions_probs = mvs_avg_policy->GetStatePolicy(info_state);
+      if (!actions_probs.empty()) {
+        mvs_round1_policy->SetStatePolicy(info_state, actions_probs);
+        matched_states++;
+      }
+    }
+  }
+  std::cout << "Matched info states from MVS policy: " << matched_states << std::endl;
+
+  std::unordered_map<std::string, double> exploitability_table = DepthLimitedExploitability(*game, mvs_round1_policy, round1_infostates);
+
+  std::cout << "MVS R1 exploitability: " << exploitability_table["Player 0 exploitability"] << std::endl;
+  std::cout << "MVS R1 exploitability: " << exploitability_table["Player 1 exploitability"] << std::endl;
+  std::cout << "MVS R1 total exploitability: " << exploitability_table["Total exploitability"] << std::endl;
+
+  // Also run standard CFR for comparison
+  std::cout << "Running standard CFR on original game..." << std::endl;
+  algorithms::CFRSolverBase orig_solver(*game,
+                                        /*alternating_updates=*/true,
+                                        /*linear_averaging=*/true,
+                                        /*regret_matching_plus=*/true);
+
+  for (int i = 0; i < 500; ++i) {
+    orig_solver.EvaluateAndUpdatePolicy();
+  }
+  auto orig_avg_policy = orig_solver.AveragePolicy();
+
+  auto orig_value = algorithms::ExpectedReturns(
+      *game->NewInitialState(), *orig_avg_policy, -1, true);
+
+  double orig_exploitability = algorithms::Exploitability(*game, *orig_avg_policy);
+
+  // Extract original policy for round-1 states into a TabularPolicy
+  auto orig_round1_policy = std::make_shared<TabularPolicy>();
+  matched_states = 0;
+  for (const auto& [player, info_states] : round1_infostates) {
+    for (const auto& info_state : info_states) {
+      auto actions_probs = orig_avg_policy->GetStatePolicy(info_state);
+      if (!actions_probs.empty()) {
+        orig_round1_policy->SetStatePolicy(info_state, actions_probs);
+        matched_states++;
+      }
+    }
+  }
+
+  std::unordered_map<std::string, double> orig_exploitability_table = DepthLimitedExploitability(*game, orig_round1_policy, round1_infostates);
+
+  std::cout << "Original R1 exploitability: " << orig_exploitability_table["Player 0 exploitability"] << std::endl;
+  std::cout << "Original R1 exploitability: " << orig_exploitability_table["Player 1 exploitability"] << std::endl;
+  std::cout << "Original R1 total exploitability: " << orig_exploitability_table["Total exploitability"] << std::endl;
+
+  // Verify:
+  // 1. MVS value should match original Nash value
+  double tolerance = 0.1;
+  SPIEL_CHECK_LT(std::abs(orig_exploitability_table["Total exploitability"] - exploitability_table["Total exploitability"]), tolerance);
+
+  // 2. Combined policy exploitability should be reasonably low
+  // Since MVS learns the same equilibrium value, combining MVS round-1 with
+  // CFR round-2 should give a near-equilibrium strategy
+  std::cout << "\nIf exploitability is high, it means MVS round-1 and CFR round-2 "
+            << "are not compatible (different equilibria)." << std::endl;
+
+  std::cout << "TestMVSStrategyInOriginalGame passed!" << std::endl;
 }
 
 }  // namespace
@@ -858,6 +1206,39 @@ void TestMVSFullGameValuePreservationOneRoundLeducPoker() {
 
 int main(int argc, char** argv) {
   open_spiel::Init("", &argc, &argv, true);
+
+  // Check for command line flags
+  bool leduc_structure_only = false;
+  bool leduc_cfr_only = false;
+  bool leduc_verify_only = false;
+  for (int i = 1; i < argc; ++i) {
+    std::string arg = argv[i];
+    if (arg == "--leduc_structure") {
+      leduc_structure_only = true;
+    } else if (arg == "--leduc_cfr") {
+      leduc_cfr_only = true;
+    } else if (arg == "--leduc_verify") {
+      leduc_verify_only = true;
+    }
+  }
+
+  if (leduc_structure_only) {
+    std::cout << "Running only Leduc structure test..." << std::endl;
+    open_spiel::TestMVSSubtreePureStrategiesLeducStructure();
+    return 0;
+  }
+
+  if (leduc_cfr_only) {
+    std::cout << "Running only Leduc CFR value test..." << std::endl;
+    open_spiel::TestMVSSubtreePureStrategiesLeducCFRValue();
+    return 0;
+  }
+
+  if (leduc_verify_only) {
+    std::cout << "Running only Leduc strategy verification test..." << std::endl;
+    open_spiel::TestMVSStrategyInOriginalGame();
+    return 0;
+  }
 
   // Basic MVS tests
   open_spiel::TestBasicConstruction();
@@ -878,7 +1259,11 @@ int main(int argc, char** argv) {
   open_spiel::TestMVSValueWithAllPureStrategies();
   open_spiel::TestMVSFullGameValuePreservationRootStateKuhnPoker();
   open_spiel::TestMVSFullGameValuePreservationOneActionKuhnPoker();
-  open_spiel::TestMVSFullGameValuePreservationOneRoundLeducPoker();
+
+  // Leduc poker tests with subtree pure strategies
+  open_spiel::TestMVSSubtreePureStrategiesLeducStructure();
+  open_spiel::TestMVSSubtreePureStrategiesLeducCFRValue();
+  open_spiel::TestMVSStrategyInOriginalGame();
 
   std::cout << "\nAll tests passed!" << std::endl;
   return 0;

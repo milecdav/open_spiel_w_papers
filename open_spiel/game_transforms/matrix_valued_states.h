@@ -202,6 +202,9 @@ class MVSStateWithSubtreePureStrategies : public WrappedState {
   const std::vector<std::shared_ptr<Policy>>& GetPortfolioP0() const;
   const std::vector<std::shared_ptr<Policy>>& GetPortfolioP1() const;
 
+  // Access the underlying wrapped state (needed for payoff computation)
+  const State& GetUnderlyingState() const { return *state_; }
+
  protected:
   void DoApplyAction(Action action_id) override;
 
@@ -242,6 +245,16 @@ class MVSGameWithSubtreePureStrategies : public WrappedGame {
   const std::vector<double>& GetPayoff(
       const MVSStateWithSubtreePureStrategies& mvs_state,
       int p1_idx, int p2_idx) const;
+
+  // Get cache statistics for debugging
+  size_t NumCachedStates() const { return payoff_cache_.size(); }
+  size_t NumCachedPayoffs() const {
+    size_t total = 0;
+    for (const auto& [key, inner] : payoff_cache_) {
+      total += inner.size();
+    }
+    return total;
+  }
 
  private:
   friend class MVSStateWithSubtreePureStrategies;
