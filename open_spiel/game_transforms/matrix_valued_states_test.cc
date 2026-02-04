@@ -639,8 +639,8 @@ void TestMVSValueWithAllPureStrategies() {
 
 // Test that MVS transformation preserves game value for the full game
 // when using all pure strategies and depth limit 0 from root
-void TestMVSFullGameValuePreservation() {
-  std::cout << "TestMVSFullGameValuePreservation" << std::endl;
+void TestMVSFullGameValuePreservationRootStateKuhnPoker() {
+  std::cout << "TestMVSFullGameValuePreservationRootStateKuhnPoker" << std::endl;
 
   auto game = LoadGame("kuhn_poker");
   auto initial_state = game->NewInitialState();
@@ -709,6 +709,150 @@ void TestMVSFullGameValuePreservation() {
   std::cout << "Full game value preservation test passed!" << std::endl;
 }
 
+// Test that MVS transformation preserves game value for the full game
+// when using all pure strategies and depth limit 0 from one action state
+void TestMVSFullGameValuePreservationOneActionKuhnPoker() {
+  std::cout << "TestMVSFullGameValuePreservationOneActionKuhnPoker" << std::endl;
+
+  auto game = LoadGame("kuhn_poker");
+  auto initial_state = game->NewInitialState();
+
+  // Get all pure strategies from the root
+  auto p0_portfolio = EnumerateSubtreePureStrategies(*initial_state, 0);
+  auto p1_portfolio = EnumerateSubtreePureStrategies(*initial_state, 1);
+
+  std::cout << "Full game - P0 portfolio size: " << p0_portfolio.size() << std::endl;
+  std::cout << "Full game - P1 portfolio size: " << p1_portfolio.size() << std::endl;
+
+  // For Kuhn poker, this should be manageable
+  // P0 has 2 infostates * 2 actions = 4 pure strategies typically
+  // Actually depends on the tree structure
+
+  if (p0_portfolio.size() > 100 || p1_portfolio.size() > 100) {
+    std::cout << "Skipping large portfolio test (P0=" << p0_portfolio.size()
+              << ", P1=" << p1_portfolio.size() << ")" << std::endl;
+    return;
+  }
+
+  // Create MVS game with depth 1
+  auto mvs_game = std::make_shared<MVSGame>(
+      game, p0_portfolio, p1_portfolio, /*depth_limit=*/1);
+
+  // Solve MVS game with CFR
+  algorithms::CFRSolverBase mvs_solver(*mvs_game,
+                                        /*alternating_updates=*/true,
+                                        /*linear_averaging=*/true,
+                                        /*regret_matching_plus=*/true);
+
+  for (int i = 0; i < 2000; ++i) {
+    mvs_solver.EvaluateAndUpdatePolicy();
+  }
+
+  auto mvs_policy = mvs_solver.AveragePolicy();
+  auto mvs_value = algorithms::ExpectedReturns(
+      *mvs_game->NewInitialState(), *mvs_policy, -1, true);
+
+  std::cout << "MVS game value (CFR 2000 iters): [" << mvs_value[0] << ", "
+            << mvs_value[1] << "]" << std::endl;
+
+  // Solve original game with CFR
+  algorithms::CFRSolverBase orig_solver(*game,
+                                         /*alternating_updates=*/true,
+                                         /*linear_averaging=*/true,
+                                         /*regret_matching_plus=*/true);
+
+  for (int i = 0; i < 2000; ++i) {
+    orig_solver.EvaluateAndUpdatePolicy();
+  }
+
+  auto orig_policy = orig_solver.AveragePolicy();
+  auto orig_value = algorithms::ExpectedReturns(
+      *game->NewInitialState(), *orig_policy, -1, true);
+
+  std::cout << "Original game value (CFR 2000 iters): [" << orig_value[0] << ", "
+            << orig_value[1] << "]" << std::endl;
+
+  // The values should be close (CFR convergence)
+  // With all pure strategies, the MVS game contains all possible play,
+  // so the Nash equilibrium value should be the same
+  double tolerance = 0.05;  // CFR may not have fully converged
+  SPIEL_CHECK_LT(std::abs(mvs_value[0] - orig_value[0]), tolerance);
+
+  std::cout << "Full game value preservation test passed!" << std::endl;
+}
+
+// Test that MVS transformation preserves game value for the full game
+// when using all pure strategies and 1 round state
+void TestMVSFullGameValuePreservationOneRoundLeducPoker() {
+  std::cout << "TestMVSFullGameValuePreservationOneRoundLeducPoker" << std::endl;
+
+  auto game = LoadGame("leduc_poker");
+  auto initial_state = game->NewInitialState();
+
+  // Get all pure strategies from the root
+  auto p0_portfolio = EnumerateSubtreePureStrategies(*initial_state, 0);
+  auto p1_portfolio = EnumerateSubtreePureStrategies(*initial_state, 1);
+
+  std::cout << "Full game - P0 portfolio size: " << p0_portfolio.size() << std::endl;
+  std::cout << "Full game - P1 portfolio size: " << p1_portfolio.size() << std::endl;
+
+  // For Kuhn poker, this should be manageable
+  // P0 has 2 infostates * 2 actions = 4 pure strategies typically
+  // Actually depends on the tree structure
+
+  if (p0_portfolio.size() > 100 || p1_portfolio.size() > 100) {
+    std::cout << "Skipping large portfolio test (P0=" << p0_portfolio.size()
+              << ", P1=" << p1_portfolio.size() << ")" << std::endl;
+    return;
+  }
+
+  // Create MVS game with depth 2
+  auto mvs_game = std::make_shared<MVSGame>(
+      game, p0_portfolio, p1_portfolio, /*depth_limit=*/2);
+
+  // Solve MVS game with CFR
+  algorithms::CFRSolverBase mvs_solver(*mvs_game,
+                                        /*alternating_updates=*/true,
+                                        /*linear_averaging=*/true,
+                                        /*regret_matching_plus=*/true);
+
+  for (int i = 0; i < 1000; ++i) {
+    mvs_solver.EvaluateAndUpdatePolicy();
+  }
+
+  auto mvs_policy = mvs_solver.AveragePolicy();
+  auto mvs_value = algorithms::ExpectedReturns(
+      *mvs_game->NewInitialState(), *mvs_policy, -1, true);
+
+  std::cout << "MVS game value (CFR 2000 iters): [" << mvs_value[0] << ", "
+            << mvs_value[1] << "]" << std::endl;
+
+  // Solve original game with CFR
+  algorithms::CFRSolverBase orig_solver(*game,
+                                         /*alternating_updates=*/true,
+                                         /*linear_averaging=*/true,
+                                         /*regret_matching_plus=*/true);
+
+  for (int i = 0; i < 1000; ++i) {
+    orig_solver.EvaluateAndUpdatePolicy();
+  }
+
+  auto orig_policy = orig_solver.AveragePolicy();
+  auto orig_value = algorithms::ExpectedReturns(
+      *game->NewInitialState(), *orig_policy, -1, true);
+
+  std::cout << "Original game value (CFR 2000 iters): [" << orig_value[0] << ", "
+            << orig_value[1] << "]" << std::endl;
+
+  // The values should be close (CFR convergence)
+  // With all pure strategies, the MVS game contains all possible play,
+  // so the Nash equilibrium value should be the same
+  double tolerance = 0.05;  // CFR may not have fully converged
+  SPIEL_CHECK_LT(std::abs(mvs_value[0] - orig_value[0]), tolerance);
+
+  std::cout << "Full game value preservation test passed!" << std::endl;
+}
+
 }  // namespace
 }  // namespace open_spiel
 
@@ -732,7 +876,9 @@ int main(int argc, char** argv) {
 
   // Comprehensive MVS value verification
   open_spiel::TestMVSValueWithAllPureStrategies();
-  open_spiel::TestMVSFullGameValuePreservation();
+  open_spiel::TestMVSFullGameValuePreservationRootStateKuhnPoker();
+  open_spiel::TestMVSFullGameValuePreservationOneActionKuhnPoker();
+  open_spiel::TestMVSFullGameValuePreservationOneRoundLeducPoker();
 
   std::cout << "\nAll tests passed!" << std::endl;
   return 0;

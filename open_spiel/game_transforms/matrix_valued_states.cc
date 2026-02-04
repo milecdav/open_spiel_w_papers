@@ -558,372 +558,372 @@ std::vector<std::shared_ptr<Policy>> EnumerateSubtreePureStrategies(
 // MVSGameWithSubtreePureStrategies Implementation
 // ============================================================================
 
-namespace {
+// namespace {
 
-GameType ConvertTypeForSubtree(const GameType& type) {
-  GameType new_type{
-      /*short_name=*/"mvs_subtree_pure",
-      /*long_name=*/"MVS with Subtree Pure Strategies " + type.long_name,
-      GameType::Dynamics::kSequential,
-      GameType::ChanceMode::kSampledStochastic,
-      GameType::Information::kImperfectInformation,
-      GameType::Utility::kGeneralSum,
-      GameType::RewardModel::kTerminal,
-      /*max_num_players=*/2,
-      /*min_num_players=*/2,
-      /*provides_information_state_string=*/true,
-      /*provides_information_state_tensor=*/false,
-      /*provides_observation_string=*/true,
-      /*provides_observation_tensor=*/false,
-      /*parameter_specification=*/{},
-      /*default_loadable=*/false};
-  new_type.chance_mode = type.chance_mode;
-  new_type.utility = type.utility;
-  return new_type;
-}
+// GameType ConvertTypeForSubtree(const GameType& type) {
+//   GameType new_type{
+//       /*short_name=*/"mvs_subtree_pure",
+//       /*long_name=*/"MVS with Subtree Pure Strategies " + type.long_name,
+//       GameType::Dynamics::kSequential,
+//       GameType::ChanceMode::kSampledStochastic,
+//       GameType::Information::kImperfectInformation,
+//       GameType::Utility::kGeneralSum,
+//       GameType::RewardModel::kTerminal,
+//       /*max_num_players=*/2,
+//       /*min_num_players=*/2,
+//       /*provides_information_state_string=*/true,
+//       /*provides_information_state_tensor=*/false,
+//       /*provides_observation_string=*/true,
+//       /*provides_observation_tensor=*/false,
+//       /*parameter_specification=*/{},
+//       /*default_loadable=*/false};
+//   new_type.chance_mode = type.chance_mode;
+//   new_type.utility = type.utility;
+//   return new_type;
+// }
 
-}  // namespace
+// }  // namespace
 
-MVSGameWithSubtreePureStrategies::MVSGameWithSubtreePureStrategies(
-    std::shared_ptr<const Game> game,
-    int depth_limit,
-    DepthMode depth_mode)
-    : WrappedGame(game, ConvertTypeForSubtree(game->GetType()),
-                  game->GetParameters()),
-      depth_limit_(depth_limit),
-      depth_mode_(depth_mode) {
-  SPIEL_CHECK_GE(depth_limit_, 0);
-  SPIEL_CHECK_EQ(game->NumPlayers(), 2);
-}
+// MVSGameWithSubtreePureStrategies::MVSGameWithSubtreePureStrategies(
+//     std::shared_ptr<const Game> game,
+//     int depth_limit,
+//     DepthMode depth_mode)
+//     : WrappedGame(game, ConvertTypeForSubtree(game->GetType()),
+//                   game->GetParameters()),
+//       depth_limit_(depth_limit),
+//       depth_mode_(depth_mode) {
+//   SPIEL_CHECK_GE(depth_limit_, 0);
+//   SPIEL_CHECK_EQ(game->NumPlayers(), 2);
+// }
 
-std::unique_ptr<State> MVSGameWithSubtreePureStrategies::NewInitialState() const {
-  return std::make_unique<MVSStateWithSubtreePureStrategies>(
-      shared_from_this(), game_->NewInitialState());
-}
+// std::unique_ptr<State> MVSGameWithSubtreePureStrategies::NewInitialState() const {
+//   return std::make_unique<MVSStateWithSubtreePureStrategies>(
+//       shared_from_this(), game_->NewInitialState());
+// }
 
-int MVSGameWithSubtreePureStrategies::NumDistinctActions() const {
-  // We don't know the max portfolio size ahead of time, but it's at least
-  // as many as the original game's actions. In practice, portfolios can be
-  // larger, but actions are just indices so this should work.
-  return std::max(game_->NumDistinctActions(), 1000);  // Upper bound estimate
-}
+// int MVSGameWithSubtreePureStrategies::NumDistinctActions() const {
+//   // We don't know the max portfolio size ahead of time, but it's at least
+//   // as many as the original game's actions. In practice, portfolios can be
+//   // larger, but actions are just indices so this should work.
+//   return std::max(game_->NumDistinctActions(), 1000);  // Upper bound estimate
+// }
 
-int MVSGameWithSubtreePureStrategies::MaxGameLength() const {
-  return depth_limit_ + 2;
-}
+// int MVSGameWithSubtreePureStrategies::MaxGameLength() const {
+//   return depth_limit_ + 2;
+// }
 
-const std::vector<double>& MVSGameWithSubtreePureStrategies::GetPayoff(
-    const MVSStateWithSubtreePureStrategies& mvs_state,
-    int p1_idx, int p2_idx) const {
-  std::string history_key = mvs_state.state_->HistoryString();
-  int flat_idx = p1_idx * 10000 + p2_idx;  // Simple encoding
+// const std::vector<double>& MVSGameWithSubtreePureStrategies::GetPayoff(
+//     const MVSStateWithSubtreePureStrategies& mvs_state,
+//     int p1_idx, int p2_idx) const {
+//   std::string history_key = mvs_state.state_->HistoryString();
+//   int flat_idx = p1_idx * 10000 + p2_idx;  // Simple encoding
 
-  auto it = payoff_cache_.find(history_key);
-  if (it != payoff_cache_.end()) {
-    auto it2 = it->second.find(flat_idx);
-    if (it2 != it->second.end()) {
-      return it2->second;
-    }
-  }
+//   auto it = payoff_cache_.find(history_key);
+//   if (it != payoff_cache_.end()) {
+//     auto it2 = it->second.find(flat_idx);
+//     if (it2 != it->second.end()) {
+//       return it2->second;
+//     }
+//   }
 
-  // Compute the payoff
-  const auto& p0_portfolio = mvs_state.GetPortfolioP0();
-  const auto& p1_portfolio = mvs_state.GetPortfolioP1();
+//   // Compute the payoff
+//   const auto& p0_portfolio = mvs_state.GetPortfolioP0();
+//   const auto& p1_portfolio = mvs_state.GetPortfolioP1();
 
-  std::vector<const Policy*> policies = {p0_portfolio[p1_idx].get(),
-                                          p1_portfolio[p2_idx].get()};
-  auto returns = algorithms::ExpectedReturns(
-      *mvs_state.state_, policies, /*depth_limit=*/-1,
-      /*use_infostate_get_policy=*/false);
+//   std::vector<const Policy*> policies = {p0_portfolio[p1_idx].get(),
+//                                           p1_portfolio[p2_idx].get()};
+//   auto returns = algorithms::ExpectedReturns(
+//       *mvs_state.state_, policies, /*depth_limit=*/-1,
+//       /*use_infostate_get_policy=*/false);
 
-  payoff_cache_[history_key][flat_idx] = returns;
-  return payoff_cache_[history_key][flat_idx];
-}
+//   payoff_cache_[history_key][flat_idx] = returns;
+//   return payoff_cache_[history_key][flat_idx];
+// }
 
-// ============================================================================
-// MVSStateWithSubtreePureStrategies Implementation
-// ============================================================================
+// // ============================================================================
+// // MVSStateWithSubtreePureStrategies Implementation
+// // ============================================================================
 
-MVSStateWithSubtreePureStrategies::MVSStateWithSubtreePureStrategies(
-    std::shared_ptr<const Game> game,
-    std::unique_ptr<State> state)
-    : WrappedState(game, std::move(state)),
-      phase_(Phase::kNormal),
-      current_depth_(0),
-      current_round_(0),
-      p1_choice_(kInvalidAction),
-      p2_choice_(kInvalidAction),
-      portfolios_computed_(false) {}
+// MVSStateWithSubtreePureStrategies::MVSStateWithSubtreePureStrategies(
+//     std::shared_ptr<const Game> game,
+//     std::unique_ptr<State> state)
+//     : WrappedState(game, std::move(state)),
+//       phase_(Phase::kNormal),
+//       current_depth_(0),
+//       current_round_(0),
+//       p1_choice_(kInvalidAction),
+//       p2_choice_(kInvalidAction),
+//       portfolios_computed_(false) {}
 
-MVSStateWithSubtreePureStrategies::MVSStateWithSubtreePureStrategies(
-    const MVSStateWithSubtreePureStrategies& other)
-    : WrappedState(other),
-      phase_(other.phase_),
-      current_depth_(other.current_depth_),
-      current_round_(other.current_round_),
-      p1_choice_(other.p1_choice_),
-      p2_choice_(other.p2_choice_),
-      portfolio_p0_(other.portfolio_p0_),
-      portfolio_p1_(other.portfolio_p1_),
-      portfolios_computed_(other.portfolios_computed_) {}
+// MVSStateWithSubtreePureStrategies::MVSStateWithSubtreePureStrategies(
+//     const MVSStateWithSubtreePureStrategies& other)
+//     : WrappedState(other),
+//       phase_(other.phase_),
+//       current_depth_(other.current_depth_),
+//       current_round_(other.current_round_),
+//       p1_choice_(other.p1_choice_),
+//       p2_choice_(other.p2_choice_),
+//       portfolio_p0_(other.portfolio_p0_),
+//       portfolio_p1_(other.portfolio_p1_),
+//       portfolios_computed_(other.portfolios_computed_) {}
 
-const MVSGameWithSubtreePureStrategies*
-MVSStateWithSubtreePureStrategies::GetMVSGame() const {
-  return down_cast<const MVSGameWithSubtreePureStrategies*>(game_.get());
-}
+// const MVSGameWithSubtreePureStrategies*
+// MVSStateWithSubtreePureStrategies::GetMVSGame() const {
+//   return down_cast<const MVSGameWithSubtreePureStrategies*>(game_.get());
+// }
 
-bool MVSStateWithSubtreePureStrategies::AtDepthLimit() const {
-  if (state_->IsTerminal() || state_->IsChanceNode()) {
-    return false;
-  }
+// bool MVSStateWithSubtreePureStrategies::AtDepthLimit() const {
+//   if (state_->IsTerminal() || state_->IsChanceNode()) {
+//     return false;
+//   }
 
-  const auto* game = GetMVSGame();
-  if (game->GetDepthMode() == MVSGame::DepthMode::kActionBased) {
-    return current_depth_ >= game->DepthLimit();
-  } else {
-    return current_round_ >= game->DepthLimit();
-  }
-}
+//   const auto* game = GetMVSGame();
+//   if (game->GetDepthMode() == MVSGame::DepthMode::kActionBased) {
+//     return current_depth_ >= game->DepthLimit();
+//   } else {
+//     return current_round_ >= game->DepthLimit();
+//   }
+// }
 
-void MVSStateWithSubtreePureStrategies::EnsurePortfoliosComputed() const {
-  if (portfolios_computed_) return;
+// void MVSStateWithSubtreePureStrategies::EnsurePortfoliosComputed() const {
+//   if (portfolios_computed_) return;
 
-  // Enumerate pure strategies for both players from the current state
-  portfolio_p0_ = EnumerateSubtreePureStrategies(*state_, 0);
-  portfolio_p1_ = EnumerateSubtreePureStrategies(*state_, 1);
-  portfolios_computed_ = true;
-}
+//   // Enumerate pure strategies for both players from the current state
+//   portfolio_p0_ = EnumerateSubtreePureStrategies(*state_, 0);
+//   portfolio_p1_ = EnumerateSubtreePureStrategies(*state_, 1);
+//   portfolios_computed_ = true;
+// }
 
-const std::vector<std::shared_ptr<Policy>>&
-MVSStateWithSubtreePureStrategies::GetPortfolioP0() const {
-  EnsurePortfoliosComputed();
-  return portfolio_p0_;
-}
+// const std::vector<std::shared_ptr<Policy>>&
+// MVSStateWithSubtreePureStrategies::GetPortfolioP0() const {
+//   EnsurePortfoliosComputed();
+//   return portfolio_p0_;
+// }
 
-const std::vector<std::shared_ptr<Policy>>&
-MVSStateWithSubtreePureStrategies::GetPortfolioP1() const {
-  EnsurePortfoliosComputed();
-  return portfolio_p1_;
-}
+// const std::vector<std::shared_ptr<Policy>>&
+// MVSStateWithSubtreePureStrategies::GetPortfolioP1() const {
+//   EnsurePortfoliosComputed();
+//   return portfolio_p1_;
+// }
 
-Player MVSStateWithSubtreePureStrategies::CurrentPlayer() const {
-  switch (phase_) {
-    case Phase::kNormal:
-      if (AtDepthLimit()) {
-        return 0;
-      }
-      return state_->CurrentPlayer();
-    case Phase::kPortfolioP1:
-      return 0;
-    case Phase::kPortfolioP2:
-      return 1;
-    case Phase::kMatrixTerminal:
-      return kTerminalPlayerId;
-  }
-  SpielFatalError("Unknown phase");
-}
+// Player MVSStateWithSubtreePureStrategies::CurrentPlayer() const {
+//   switch (phase_) {
+//     case Phase::kNormal:
+//       if (AtDepthLimit()) {
+//         return 0;
+//       }
+//       return state_->CurrentPlayer();
+//     case Phase::kPortfolioP1:
+//       return 0;
+//     case Phase::kPortfolioP2:
+//       return 1;
+//     case Phase::kMatrixTerminal:
+//       return kTerminalPlayerId;
+//   }
+//   SpielFatalError("Unknown phase");
+// }
 
-std::vector<Action> MVSStateWithSubtreePureStrategies::LegalActions() const {
-  switch (phase_) {
-    case Phase::kNormal:
-      if (AtDepthLimit()) {
-        EnsurePortfoliosComputed();
-        std::vector<Action> actions;
-        for (size_t i = 0; i < portfolio_p0_.size(); ++i) {
-          actions.push_back(i);
-        }
-        return actions;
-      }
-      return state_->LegalActions();
-    case Phase::kPortfolioP1: {
-      EnsurePortfoliosComputed();
-      std::vector<Action> actions;
-      for (size_t i = 0; i < portfolio_p0_.size(); ++i) {
-        actions.push_back(i);
-      }
-      return actions;
-    }
-    case Phase::kPortfolioP2: {
-      EnsurePortfoliosComputed();
-      std::vector<Action> actions;
-      for (size_t i = 0; i < portfolio_p1_.size(); ++i) {
-        actions.push_back(i);
-      }
-      return actions;
-    }
-    case Phase::kMatrixTerminal:
-      return {};
-  }
-  SpielFatalError("Unknown phase");
-}
+// std::vector<Action> MVSStateWithSubtreePureStrategies::LegalActions() const {
+//   switch (phase_) {
+//     case Phase::kNormal:
+//       if (AtDepthLimit()) {
+//         EnsurePortfoliosComputed();
+//         std::vector<Action> actions;
+//         for (size_t i = 0; i < portfolio_p0_.size(); ++i) {
+//           actions.push_back(i);
+//         }
+//         return actions;
+//       }
+//       return state_->LegalActions();
+//     case Phase::kPortfolioP1: {
+//       EnsurePortfoliosComputed();
+//       std::vector<Action> actions;
+//       for (size_t i = 0; i < portfolio_p0_.size(); ++i) {
+//         actions.push_back(i);
+//       }
+//       return actions;
+//     }
+//     case Phase::kPortfolioP2: {
+//       EnsurePortfoliosComputed();
+//       std::vector<Action> actions;
+//       for (size_t i = 0; i < portfolio_p1_.size(); ++i) {
+//         actions.push_back(i);
+//       }
+//       return actions;
+//     }
+//     case Phase::kMatrixTerminal:
+//       return {};
+//   }
+//   SpielFatalError("Unknown phase");
+// }
 
-std::vector<Action> MVSStateWithSubtreePureStrategies::LegalActions(
-    Player player) const {
-  if (player != CurrentPlayer()) {
-    return {};
-  }
-  return LegalActions();
-}
+// std::vector<Action> MVSStateWithSubtreePureStrategies::LegalActions(
+//     Player player) const {
+//   if (player != CurrentPlayer()) {
+//     return {};
+//   }
+//   return LegalActions();
+// }
 
-std::string MVSStateWithSubtreePureStrategies::ActionToString(
-    Player player, Action action_id) const {
-  switch (phase_) {
-    case Phase::kNormal:
-      if (AtDepthLimit()) {
-        return absl::StrCat("P", player, "_pure_", action_id);
-      }
-      return state_->ActionToString(player, action_id);
-    case Phase::kPortfolioP1:
-    case Phase::kPortfolioP2:
-      return absl::StrCat("P", player, "_pure_", action_id);
-    case Phase::kMatrixTerminal:
-      return "terminal";
-  }
-  SpielFatalError("Unknown phase");
-}
+// std::string MVSStateWithSubtreePureStrategies::ActionToString(
+//     Player player, Action action_id) const {
+//   switch (phase_) {
+//     case Phase::kNormal:
+//       if (AtDepthLimit()) {
+//         return absl::StrCat("P", player, "_pure_", action_id);
+//       }
+//       return state_->ActionToString(player, action_id);
+//     case Phase::kPortfolioP1:
+//     case Phase::kPortfolioP2:
+//       return absl::StrCat("P", player, "_pure_", action_id);
+//     case Phase::kMatrixTerminal:
+//       return "terminal";
+//   }
+//   SpielFatalError("Unknown phase");
+// }
 
-bool MVSStateWithSubtreePureStrategies::IsTerminal() const {
-  if (phase_ == Phase::kMatrixTerminal) {
-    return true;
-  }
-  if (phase_ == Phase::kNormal && state_->IsTerminal()) {
-    return true;
-  }
-  return false;
-}
+// bool MVSStateWithSubtreePureStrategies::IsTerminal() const {
+//   if (phase_ == Phase::kMatrixTerminal) {
+//     return true;
+//   }
+//   if (phase_ == Phase::kNormal && state_->IsTerminal()) {
+//     return true;
+//   }
+//   return false;
+// }
 
-std::vector<double> MVSStateWithSubtreePureStrategies::Returns() const {
-  if (phase_ == Phase::kMatrixTerminal) {
-    const auto* game = GetMVSGame();
-    return game->GetPayoff(*this, p1_choice_, p2_choice_);
-  }
-  if (state_->IsTerminal()) {
-    return state_->Returns();
-  }
-  return std::vector<double>(num_players_, 0.0);
-}
+// std::vector<double> MVSStateWithSubtreePureStrategies::Returns() const {
+//   if (phase_ == Phase::kMatrixTerminal) {
+//     const auto* game = GetMVSGame();
+//     return game->GetPayoff(*this, p1_choice_, p2_choice_);
+//   }
+//   if (state_->IsTerminal()) {
+//     return state_->Returns();
+//   }
+//   return std::vector<double>(num_players_, 0.0);
+// }
 
-std::vector<double> MVSStateWithSubtreePureStrategies::Rewards() const {
-  if (IsTerminal()) {
-    return Returns();
-  }
-  return std::vector<double>(num_players_, 0.0);
-}
+// std::vector<double> MVSStateWithSubtreePureStrategies::Rewards() const {
+//   if (IsTerminal()) {
+//     return Returns();
+//   }
+//   return std::vector<double>(num_players_, 0.0);
+// }
 
-std::string MVSStateWithSubtreePureStrategies::InformationStateString(
-    Player player) const {
-  std::string base = state_->InformationStateString(player);
+// std::string MVSStateWithSubtreePureStrategies::InformationStateString(
+//     Player player) const {
+//   std::string base = state_->InformationStateString(player);
 
-  switch (phase_) {
-    case Phase::kNormal:
-      if (AtDepthLimit()) {
-        return absl::StrCat(base, ":MVSP_SELECT");
-      }
-      return base;
-    case Phase::kPortfolioP1:
-    case Phase::kPortfolioP2:
-      return absl::StrCat(base, ":MVSP_SELECT");
-    case Phase::kMatrixTerminal:
-      if (player == 0) {
-        return absl::StrCat(base, ":MVSP:", p1_choice_);
-      } else {
-        return absl::StrCat(base, ":MVSP:", p2_choice_);
-      }
-  }
-  SpielFatalError("Unknown phase");
-}
+//   switch (phase_) {
+//     case Phase::kNormal:
+//       if (AtDepthLimit()) {
+//         return absl::StrCat(base, ":MVSP_SELECT");
+//       }
+//       return base;
+//     case Phase::kPortfolioP1:
+//     case Phase::kPortfolioP2:
+//       return absl::StrCat(base, ":MVSP_SELECT");
+//     case Phase::kMatrixTerminal:
+//       if (player == 0) {
+//         return absl::StrCat(base, ":MVSP:", p1_choice_);
+//       } else {
+//         return absl::StrCat(base, ":MVSP:", p2_choice_);
+//       }
+//   }
+//   SpielFatalError("Unknown phase");
+// }
 
-std::string MVSStateWithSubtreePureStrategies::ObservationString(
-    Player player) const {
-  return InformationStateString(player);
-}
+// std::string MVSStateWithSubtreePureStrategies::ObservationString(
+//     Player player) const {
+//   return InformationStateString(player);
+// }
 
-std::string MVSStateWithSubtreePureStrategies::ToString() const {
-  std::string result = state_->ToString();
-  switch (phase_) {
-    case Phase::kNormal:
-      if (AtDepthLimit()) {
-        EnsurePortfoliosComputed();
-        absl::StrAppend(&result, "\n[MVSP: Depth limit, P0 has ",
-                        portfolio_p0_.size(), " strategies, P1 has ",
-                        portfolio_p1_.size(), " strategies]");
-      }
-      break;
-    case Phase::kPortfolioP1:
-      absl::StrAppend(&result, "\n[MVSP: P0 selecting from ",
-                      portfolio_p0_.size(), " strategies]");
-      break;
-    case Phase::kPortfolioP2:
-      absl::StrAppend(&result, "\n[MVSP: P1 selecting from ",
-                      portfolio_p1_.size(), " strategies, P0 chose ",
-                      p1_choice_, "]");
-      break;
-    case Phase::kMatrixTerminal:
-      absl::StrAppend(&result, "\n[MVSP: Terminal, P0=", p1_choice_,
-                      ", P1=", p2_choice_, "]");
-      break;
-  }
-  return result;
-}
+// std::string MVSStateWithSubtreePureStrategies::ToString() const {
+//   std::string result = state_->ToString();
+//   switch (phase_) {
+//     case Phase::kNormal:
+//       if (AtDepthLimit()) {
+//         EnsurePortfoliosComputed();
+//         absl::StrAppend(&result, "\n[MVSP: Depth limit, P0 has ",
+//                         portfolio_p0_.size(), " strategies, P1 has ",
+//                         portfolio_p1_.size(), " strategies]");
+//       }
+//       break;
+//     case Phase::kPortfolioP1:
+//       absl::StrAppend(&result, "\n[MVSP: P0 selecting from ",
+//                       portfolio_p0_.size(), " strategies]");
+//       break;
+//     case Phase::kPortfolioP2:
+//       absl::StrAppend(&result, "\n[MVSP: P1 selecting from ",
+//                       portfolio_p1_.size(), " strategies, P0 chose ",
+//                       p1_choice_, "]");
+//       break;
+//     case Phase::kMatrixTerminal:
+//       absl::StrAppend(&result, "\n[MVSP: Terminal, P0=", p1_choice_,
+//                       ", P1=", p2_choice_, "]");
+//       break;
+//   }
+//   return result;
+// }
 
-std::unique_ptr<State> MVSStateWithSubtreePureStrategies::Clone() const {
-  return std::make_unique<MVSStateWithSubtreePureStrategies>(*this);
-}
+// std::unique_ptr<State> MVSStateWithSubtreePureStrategies::Clone() const {
+//   return std::make_unique<MVSStateWithSubtreePureStrategies>(*this);
+// }
 
-std::vector<std::pair<Action, double>>
-MVSStateWithSubtreePureStrategies::ChanceOutcomes() const {
-  if (phase_ != Phase::kNormal || AtDepthLimit()) {
-    return {};
-  }
-  return state_->ChanceOutcomes();
-}
+// std::vector<std::pair<Action, double>>
+// MVSStateWithSubtreePureStrategies::ChanceOutcomes() const {
+//   if (phase_ != Phase::kNormal || AtDepthLimit()) {
+//     return {};
+//   }
+//   return state_->ChanceOutcomes();
+// }
 
-void MVSStateWithSubtreePureStrategies::DoApplyAction(Action action_id) {
-  switch (phase_) {
-    case Phase::kNormal:
-      if (AtDepthLimit()) {
-        EnsurePortfoliosComputed();
-        p1_choice_ = action_id;
-        phase_ = Phase::kPortfolioP2;
-      } else {
-        bool was_chance = state_->IsChanceNode();
-        state_->ApplyAction(action_id);
+// void MVSStateWithSubtreePureStrategies::DoApplyAction(Action action_id) {
+//   switch (phase_) {
+//     case Phase::kNormal:
+//       if (AtDepthLimit()) {
+//         EnsurePortfoliosComputed();
+//         p1_choice_ = action_id;
+//         phase_ = Phase::kPortfolioP2;
+//       } else {
+//         bool was_chance = state_->IsChanceNode();
+//         state_->ApplyAction(action_id);
 
-        if (!was_chance) {
-          current_depth_++;
-        } else if (GetMVSGame()->GetDepthMode() ==
-                   MVSGame::DepthMode::kRoundBased) {
-          current_round_++;
-        }
+//         if (!was_chance) {
+//           current_depth_++;
+//         } else if (GetMVSGame()->GetDepthMode() ==
+//                    MVSGame::DepthMode::kRoundBased) {
+//           current_round_++;
+//         }
 
-        if (!state_->IsTerminal() && !state_->IsChanceNode() && AtDepthLimit()) {
-          phase_ = Phase::kPortfolioP1;
-        }
-      }
-      break;
+//         if (!state_->IsTerminal() && !state_->IsChanceNode() && AtDepthLimit()) {
+//           phase_ = Phase::kPortfolioP1;
+//         }
+//       }
+//       break;
 
-    case Phase::kPortfolioP1:
-      p1_choice_ = action_id;
-      phase_ = Phase::kPortfolioP2;
-      break;
+//     case Phase::kPortfolioP1:
+//       p1_choice_ = action_id;
+//       phase_ = Phase::kPortfolioP2;
+//       break;
 
-    case Phase::kPortfolioP2:
-      p2_choice_ = action_id;
-      phase_ = Phase::kMatrixTerminal;
-      break;
+//     case Phase::kPortfolioP2:
+//       p2_choice_ = action_id;
+//       phase_ = Phase::kMatrixTerminal;
+//       break;
 
-    case Phase::kMatrixTerminal:
-      SpielFatalError("Cannot apply action to terminal state");
-  }
-}
+//     case Phase::kMatrixTerminal:
+//       SpielFatalError("Cannot apply action to terminal state");
+//   }
+// }
 
-std::shared_ptr<const MVSGameWithSubtreePureStrategies>
-CreateMVSGameWithSubtreePureStrategies(
-    std::shared_ptr<const Game> game,
-    int depth_limit,
-    MVSGame::DepthMode depth_mode) {
-  return std::make_shared<MVSGameWithSubtreePureStrategies>(
-      std::move(game), depth_limit, depth_mode);
-}
+// std::shared_ptr<const MVSGameWithSubtreePureStrategies>
+// CreateMVSGameWithSubtreePureStrategies(
+//     std::shared_ptr<const Game> game,
+//     int depth_limit,
+//     MVSGame::DepthMode depth_mode) {
+//   return std::make_shared<MVSGameWithSubtreePureStrategies>(
+//       std::move(game), depth_limit, depth_mode);
+// }
 
 }  // namespace open_spiel
