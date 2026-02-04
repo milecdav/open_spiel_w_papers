@@ -69,3 +69,6 @@ analysis*.txt
 
 # Clangd
 .clangd
+
+# Results
+results/
