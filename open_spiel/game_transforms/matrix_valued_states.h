@@ -155,13 +155,162 @@ class MVSState : public WrappedState {
   Action p2_choice_ = kInvalidAction;
 };
 
-// Helper function to create an MVS game
+// Helper function to create an MVS game with explicit portfolios
 std::shared_ptr<const MVSGame> CreateMVSGame(
     std::shared_ptr<const Game> game,
     std::vector<std::shared_ptr<Policy>> portfolios_p1,
     std::vector<std::shared_ptr<Policy>> portfolios_p2,
     int depth_limit,
     MVSGame::DepthMode depth_mode = MVSGame::DepthMode::kActionBased);
+
+// ============================================================================
+// MVS Game with Automatic Subtree Pure Strategy Enumeration
+// ============================================================================
+
+// This variant of MVS game automatically enumerates pure strategies
+// at each depth-limited node, rather than using a fixed portfolio.
+// This is more memory-efficient for larger games since strategies are
+// computed lazily per-subtree rather than for the entire game.
+
+class MVSGameWithSubtreePureStrategies;
+
+class MVSStateWithSubtreePureStrategies : public WrappedState {
+ public:
+  using Phase = MVSState::Phase;
+
+  MVSStateWithSubtreePureStrategies(std::shared_ptr<const Game> game,
+                                     std::unique_ptr<State> state);
+  MVSStateWithSubtreePureStrategies(const MVSStateWithSubtreePureStrategies& other);
+
+  Player CurrentPlayer() const override;
+  std::vector<Action> LegalActions() const override;
+  std::vector<Action> LegalActions(Player player) const override;
+  std::string ActionToString(Player player, Action action_id) const override;
+  bool IsTerminal() const override;
+  std::vector<double> Returns() const override;
+  std::vector<double> Rewards() const override;
+  std::string InformationStateString(Player player) const override;
+  std::string ObservationString(Player player) const override;
+  std::string ToString() const override;
+  std::unique_ptr<State> Clone() const override;
+  std::vector<std::pair<Action, double>> ChanceOutcomes() const override;
+
+  Phase GetPhase() const { return phase_; }
+  int CurrentDepth() const { return current_depth_; }
+
+  // Get the portfolios computed for this state (lazily computed)
+  const std::vector<std::shared_ptr<Policy>>& GetPortfolioP0() const;
+  const std::vector<std::shared_ptr<Policy>>& GetPortfolioP1() const;
+
+ protected:
+  void DoApplyAction(Action action_id) override;
+
+ private:
+  const MVSGameWithSubtreePureStrategies* GetMVSGame() const;
+  bool AtDepthLimit() const;
+  void EnsurePortfoliosComputed() const;
+
+  Phase phase_ = Phase::kNormal;
+  int current_depth_ = 0;
+  int current_round_ = 0;
+  Action p1_choice_ = kInvalidAction;
+  Action p2_choice_ = kInvalidAction;
+
+  // Lazily computed portfolios for this depth-limited state
+  mutable std::vector<std::shared_ptr<Policy>> portfolio_p0_;
+  mutable std::vector<std::shared_ptr<Policy>> portfolio_p1_;
+  mutable bool portfolios_computed_ = false;
+};
+
+class MVSGameWithSubtreePureStrategies : public WrappedGame {
+ public:
+  using DepthMode = MVSGame::DepthMode;
+
+  MVSGameWithSubtreePureStrategies(std::shared_ptr<const Game> game,
+                                    int depth_limit,
+                                    DepthMode depth_mode = DepthMode::kActionBased);
+
+  std::unique_ptr<State> NewInitialState() const override;
+  int NumDistinctActions() const override;
+  int MaxGameLength() const override;
+
+  int DepthLimit() const { return depth_limit_; }
+  DepthMode GetDepthMode() const { return depth_mode_; }
+
+  // Get the payoff for a specific portfolio pair at a given state.
+  // Uses the state's lazily-computed portfolios.
+  const std::vector<double>& GetPayoff(
+      const MVSStateWithSubtreePureStrategies& mvs_state,
+      int p1_idx, int p2_idx) const;
+
+ private:
+  friend class MVSStateWithSubtreePureStrategies;
+
+  int depth_limit_;
+  DepthMode depth_mode_;
+
+  // Cache: (history_key, p1_idx, p2_idx) -> returns
+  // Using nested structure for simplicity
+  mutable std::unordered_map<std::string,
+      std::unordered_map<int, std::vector<double>>> payoff_cache_;
+};
+
+// Factory function for MVS game with automatic subtree pure strategies
+std::shared_ptr<const MVSGameWithSubtreePureStrategies>
+CreateMVSGameWithSubtreePureStrategies(
+    std::shared_ptr<const Game> game,
+    int depth_limit,
+    MVSGame::DepthMode depth_mode = MVSGame::DepthMode::kActionBased);
+
+// ============================================================================
+// Pure Strategy Enumeration Utilities
+// ============================================================================
+
+// A pure strategy for a single player in a subtree.
+// Maps information state strings to the chosen action at that infostate.
+using PureStrategyMap = std::unordered_map<std::string, Action>;
+
+// A policy that implements a pure strategy defined by a PureStrategyMap.
+// Falls back to uniform random for infostates not in the map.
+class SubtreePureStrategy : public Policy {
+ public:
+  SubtreePureStrategy(PureStrategyMap strategy, Player player);
+
+  ActionsAndProbs GetStatePolicy(const State& state,
+                                  Player player) const override;
+  ActionsAndProbs GetStatePolicy(const std::string& info_state) const override;
+
+ private:
+  PureStrategyMap strategy_;
+  Player player_;
+};
+
+// Information about infostates in a subtree for a single player.
+struct SubtreeInfostates {
+  // List of information state strings reachable in the subtree.
+  std::vector<std::string> infostates;
+  // For each infostate, the list of legal actions.
+  std::unordered_map<std::string, std::vector<Action>> legal_actions;
+};
+
+// Collect all information states reachable from the given state for a player.
+// Only traverses the subtree rooted at 'state'.
+SubtreeInfostates CollectSubtreeInfostates(const State& state, Player player);
+
+// Enumerate all pure strategies for a player in the subtree rooted at 'state'.
+// Returns a vector of PureStrategyMaps, one for each pure strategy.
+// WARNING: This is exponential in the number of infostates!
+std::vector<PureStrategyMap> EnumeratePureStrategies(
+    const SubtreeInfostates& infostates);
+
+// Convert pure strategy maps to Policy objects for use with MVSGame.
+std::vector<std::shared_ptr<Policy>> ConvertToPortfolio(
+    const std::vector<PureStrategyMap>& pure_strategies, Player player);
+
+// Convenience function: enumerate all pure strategies for a player from a state
+// and return them as a portfolio of policies.
+std::vector<std::shared_ptr<Policy>> EnumerateSubtreePureStrategies(
+    const State& state, Player player);
 
 }  // namespace open_spiel
 
