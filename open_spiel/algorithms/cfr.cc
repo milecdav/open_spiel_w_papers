@@ -68,9 +68,26 @@ CFRAveragePolicy::CFRAveragePolicy(const CFRInfoStateValuesTable& info_states,
                                    std::shared_ptr<Policy> default_policy)
     : info_states_(info_states), default_policy_(default_policy) {}
 
+CFRAveragePolicy::CFRAveragePolicy(
+    const CFRInfoStateValuesTable& info_states,
+    std::shared_ptr<Policy> default_policy,
+    std::shared_ptr<Policy> fixed_policy,
+    const std::unordered_set<std::string>& fixed_policy_infostates)
+    : info_states_(info_states),
+      default_policy_(default_policy),
+      fixed_policy_(fixed_policy),
+      fixed_policy_infostates_(fixed_policy_infostates) {}
+
 ActionsAndProbs CFRAveragePolicy::GetStatePolicy(
     const State& state, Player player) const {
-  auto entry = info_states_.find(state.InformationStateString(player));
+  std::string info_state = state.InformationStateString(player);
+
+  // Check if this infostate has a fixed policy.
+  if (fixed_policy_ && fixed_policy_infostates_.count(info_state) > 0) {
+    return fixed_policy_->GetStatePolicy(state, player);
+  }
+
+  auto entry = info_states_.find(info_state);
   if (entry == info_states_.end()) {
     if (default_policy_) {
       return default_policy_->GetStatePolicy(state, player);
@@ -86,6 +103,11 @@ ActionsAndProbs CFRAveragePolicy::GetStatePolicy(
 
 ActionsAndProbs CFRAveragePolicy::GetStatePolicy(
     const std::string& info_state) const {
+  // Check if this infostate has a fixed policy.
+  if (fixed_policy_ && fixed_policy_infostates_.count(info_state) > 0) {
+    return fixed_policy_->GetStatePolicy(info_state);
+  }
+
   auto entry = info_states_.find(info_state);
   if (entry == info_states_.end()) {
     if (default_policy_) {
@@ -126,10 +148,18 @@ void CFRAveragePolicy::GetStatePolicyFromInformationStateValues(
 TabularPolicy CFRAveragePolicy::AsTabular() const {
   TabularPolicy policy;
   for (const auto& infoset_and_entry : info_states_) {
-    ActionsAndProbs state_policy;
-    GetStatePolicyFromInformationStateValues(infoset_and_entry.second,
-                                             &state_policy);
-    policy.SetStatePolicy(infoset_and_entry.first, state_policy);
+    const std::string& info_state = infoset_and_entry.first;
+
+    // Check if this infostate has a fixed policy.
+    if (fixed_policy_ && fixed_policy_infostates_.count(info_state) > 0) {
+      policy.SetStatePolicy(info_state,
+                            fixed_policy_->GetStatePolicy(info_state));
+    } else {
+      ActionsAndProbs state_policy;
+      GetStatePolicyFromInformationStateValues(infoset_and_entry.second,
+                                               &state_policy);
+      policy.SetStatePolicy(info_state, state_policy);
+    }
   }
   return policy;
 }
@@ -138,9 +168,26 @@ CFRCurrentPolicy::CFRCurrentPolicy(const CFRInfoStateValuesTable& info_states,
                                    std::shared_ptr<Policy> default_policy)
     : info_states_(info_states), default_policy_(default_policy) {}
 
+CFRCurrentPolicy::CFRCurrentPolicy(
+    const CFRInfoStateValuesTable& info_states,
+    std::shared_ptr<Policy> default_policy,
+    std::shared_ptr<Policy> fixed_policy,
+    const std::unordered_set<std::string>& fixed_policy_infostates)
+    : info_states_(info_states),
+      default_policy_(default_policy),
+      fixed_policy_(fixed_policy),
+      fixed_policy_infostates_(fixed_policy_infostates) {}
+
 ActionsAndProbs CFRCurrentPolicy::GetStatePolicy(
     const State& state, Player player) const {
-  auto entry = info_states_.find(state.InformationStateString(player));
+  std::string info_state = state.InformationStateString(player);
+
+  // Check if this infostate has a fixed policy.
+  if (fixed_policy_ && fixed_policy_infostates_.count(info_state) > 0) {
+    return fixed_policy_->GetStatePolicy(state, player);
+  }
+
+  auto entry = info_states_.find(info_state);
   if (entry == info_states_.end()) {
     if (default_policy_) {
       return default_policy_->GetStatePolicy(state, player);
@@ -155,6 +202,11 @@ ActionsAndProbs CFRCurrentPolicy::GetStatePolicy(
 
 ActionsAndProbs CFRCurrentPolicy::GetStatePolicy(
     const std::string& info_state) const {
+  // Check if this infostate has a fixed policy.
+  if (fixed_policy_ && fixed_policy_infostates_.count(info_state) > 0) {
+    return fixed_policy_->GetStatePolicy(info_state);
+  }
+
   auto entry = info_states_.find(info_state);
   if (entry == info_states_.end()) {
     if (default_policy_) {
@@ -181,8 +233,16 @@ ActionsAndProbs CFRCurrentPolicy::GetStatePolicyFromInformationStateValues(
 TabularPolicy CFRCurrentPolicy::AsTabular() const {
   TabularPolicy policy;
   for (const auto& infoset_and_entry : info_states_) {
-    policy.SetStatePolicy(infoset_and_entry.first,
-                          infoset_and_entry.second.GetCurrentPolicy());
+    const std::string& info_state = infoset_and_entry.first;
+
+    // Check if this infostate has a fixed policy.
+    if (fixed_policy_ && fixed_policy_infostates_.count(info_state) > 0) {
+      policy.SetStatePolicy(info_state,
+                            fixed_policy_->GetStatePolicy(info_state));
+    } else {
+      policy.SetStatePolicy(info_state,
+                            infoset_and_entry.second.GetCurrentPolicy());
+    }
   }
   return policy;
 }
@@ -230,6 +290,18 @@ CFRSolverBase::CFRSolverBase(std::shared_ptr<const Game> game,
         "on a simultaneous (or normal-form) game, please first transform it "
         "using turn_based_simultaneous_game.");
   }
+}
+
+void CFRSolverBase::SetFixedPolicy(
+    std::shared_ptr<Policy> policy,
+    const std::unordered_set<std::string>& infostates) {
+  fixed_policy_ = policy;
+  fixed_policy_infostates_ = infostates;
+}
+
+void CFRSolverBase::ClearFixedPolicy() {
+  fixed_policy_ = nullptr;
+  fixed_policy_infostates_.clear();
 }
 
 void CFRSolverBase::InitializeInfostateNodes(const State &state, CfrState &cfr_state) {
@@ -386,11 +458,19 @@ std::vector<double> CFRSolverBase::ComputeCounterFactualRegret(
   std::string info_state = state.InformationStateString();
   std::vector<Action> legal_actions = state.LegalActions(current_player);
 
+  // Check if this infostate has a fixed policy.
+  bool is_fixed_infostate = fixed_policy_ &&
+      fixed_policy_infostates_.count(info_state) > 0;
+
   // Load current policy.
   std::vector<double> info_state_policy;
   if (policy_overrides && policy_overrides->at(current_player)) {
     GetInfoStatePolicyFromPolicy(&info_state_policy, legal_actions,
                                  policy_overrides->at(current_player),
+                                 info_state);
+  } else if (is_fixed_infostate) {
+    GetInfoStatePolicyFromPolicy(&info_state_policy, legal_actions,
+                                 fixed_policy_.get(),
                                  info_state);
   } else {
     info_state_policy = GetPolicy(info_state, legal_actions);
@@ -404,7 +484,9 @@ std::vector<double> CFRSolverBase::ComputeCounterFactualRegret(
           info_state_policy, legal_actions, &child_utilities, policy_overrides);
 
   // Perform regret and average strategy updates.
-  if (!alternating_player || *alternating_player == current_player) {
+  // Skip updates for infostates with fixed policies.
+  if ((!alternating_player || *alternating_player == current_player) &&
+      !is_fixed_infostate) {
     CFRInfoStateValues is_vals = info_states_[info_state];
     SPIEL_CHECK_FALSE(is_vals.empty());
 

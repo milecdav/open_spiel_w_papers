@@ -19,6 +19,7 @@
 #include <random>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "open_spiel/abseil-cpp/absl/random/distributions.h"
@@ -129,6 +130,15 @@ class CFRAveragePolicy : public Policy {
   // return a uniform policy.
   CFRAveragePolicy(const CFRInfoStateValuesTable& info_states,
                    std::shared_ptr<Policy> default_policy);
+
+  // Constructor that also accepts a fixed policy for specific infostates.
+  // For infostates in fixed_policy_infostates, the fixed_policy is returned
+  // instead of the average policy.
+  CFRAveragePolicy(const CFRInfoStateValuesTable& info_states,
+                   std::shared_ptr<Policy> default_policy,
+                   std::shared_ptr<Policy> fixed_policy,
+                   const std::unordered_set<std::string>& fixed_policy_infostates);
+
   ActionsAndProbs GetStatePolicy(const State& state) const override {
     return GetStatePolicy(state, state.CurrentPlayer());
   };
@@ -141,6 +151,8 @@ class CFRAveragePolicy : public Policy {
   const CFRInfoStateValuesTable& info_states_;
   UniformPolicy uniform_policy_;
   std::shared_ptr<Policy> default_policy_;
+  std::shared_ptr<Policy> fixed_policy_;
+  std::unordered_set<std::string> fixed_policy_infostates_;
   void GetStatePolicyFromInformationStateValues(
       const CFRInfoStateValues& is_vals,
       ActionsAndProbs* actions_and_probs) const;
@@ -154,6 +166,13 @@ class CFRCurrentPolicy : public Policy {
   // to not use a default policy).
   CFRCurrentPolicy(const CFRInfoStateValuesTable& info_states,
                    std::shared_ptr<Policy> default_policy);
+  // Constructor that also accepts a fixed policy for specific infostates.
+  // For infostates in fixed_policy_infostates, the fixed_policy is returned
+  // instead of the regret-based current policy.
+  CFRCurrentPolicy(const CFRInfoStateValuesTable& info_states,
+                   std::shared_ptr<Policy> default_policy,
+                   std::shared_ptr<Policy> fixed_policy,
+                   const std::unordered_set<std::string>& fixed_policy_infostates);
   ActionsAndProbs GetStatePolicy(const State& state) const override {
     return GetStatePolicy(state, state.CurrentPlayer());
   };
@@ -165,6 +184,8 @@ class CFRCurrentPolicy : public Policy {
  private:
   const CFRInfoStateValuesTable& info_states_;
   std::shared_ptr<Policy> default_policy_;
+  std::shared_ptr<Policy> fixed_policy_;
+  std::unordered_set<std::string> fixed_policy_infostates_;
   ActionsAndProbs GetStatePolicyFromInformationStateValues(
       const CFRInfoStateValues& is_vals,
       ActionsAndProbs& actions_and_probs) const;
@@ -269,13 +290,17 @@ class CFRSolverBase {
 
   // Computes the average policy, containing the policy for all players.
   // The returned policy instance should only be used during the lifetime of
-  // the CFRSolver object.
+  // the CFRSolver object. If a fixed policy is set, it will be used for
+  // those infostates instead of the average policy.
   std::shared_ptr<Policy> AveragePolicy() const {
-    return std::make_shared<CFRAveragePolicy>(info_states_, nullptr);
+    return std::make_shared<CFRAveragePolicy>(info_states_, nullptr,
+                                              fixed_policy_,
+                                              fixed_policy_infostates_);
   }
   // Note: This can be quite large.
   TabularPolicy TabularAveragePolicy() const {
-    CFRAveragePolicy policy(info_states_, nullptr);
+    CFRAveragePolicy policy(info_states_, nullptr, fixed_policy_,
+                            fixed_policy_infostates_);
     return policy.AsTabular();
   }
 
@@ -283,10 +308,30 @@ class CFRSolverBase {
   // The returned policy instance should only be used during the lifetime of
   // the CFRSolver object.
   std::shared_ptr<Policy> CurrentPolicy() const {
-    return std::make_shared<CFRCurrentPolicy>(info_states_, nullptr);
+    return std::make_shared<CFRCurrentPolicy>(info_states_, nullptr,
+                                              fixed_policy_,
+                                              fixed_policy_infostates_);
   }
 
   CFRInfoStateValuesTable& InfoStateValuesTable() { return info_states_; }
+
+  // Set a fixed policy for a set of infostates. When these infostates are
+  // encountered during CFR iterations, the fixed policy will be used instead
+  // of the regret-based policy. Regret and cumulative policy updates will be
+  // skipped for these infostates.
+  void SetFixedPolicy(std::shared_ptr<Policy> policy,
+                      const std::unordered_set<std::string>& infostates);
+
+  // Clear the fixed policy and infostates, reverting to normal CFR behavior.
+  void ClearFixedPolicy();
+
+  // Returns true if there is a fixed policy set for any infostates.
+  bool HasFixedPolicy() const { return fixed_policy_ != nullptr; }
+
+  // Returns the set of infostates that have fixed policies.
+  const std::unordered_set<std::string>& FixedPolicyInfostates() const {
+    return fixed_policy_infostates_;
+  }
 
   // See comments above CFRInfoStateValues::Serialize(double_precision) for
   // notes about the double_precision parameter.
@@ -319,6 +364,12 @@ class CFRSolverBase {
 
   //Collecting state
   int states_ = 0;
+
+  // Fixed policy for specific infostates. If an infostate is in
+  // fixed_policy_infostates_, the fixed_policy_ is used instead of the
+  // regret-based policy.
+  std::shared_ptr<Policy> fixed_policy_;
+  std::unordered_set<std::string> fixed_policy_infostates_;
 
   // Compute the counterfactual regret and update the average policy for the
   // specified player.
