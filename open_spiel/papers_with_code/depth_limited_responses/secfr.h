@@ -46,13 +46,13 @@ namespace papers_with_code {
 // probability p and best-responding with probability (1-p).
 class SECFRSolver : public algorithms::CFRSolverBase {
  public:
-  SECFRSolver(const Game& game, const Policy* fixed_opponent_policy, double p, 
-    bool linear_averaging = true, bool regret_matching_plus = true, bool save_states = true, bool random_initial_regrets = false, int seed = 0) 
+  SECFRSolver(const Game& game, const Policy* fixed_opponent_policy, double p,
+    bool linear_averaging = true, bool regret_matching_plus = true, bool save_states = true, bool random_initial_regrets = false, int seed = 0)
   : CFRSolverBase(game, true, linear_averaging, regret_matching_plus, save_states, random_initial_regrets, seed),
     fixed_opponent_policy_(fixed_opponent_policy),
-    p_(p),
-    fixed_player_index_(chance_player_ + 1),
-    root_reach_probs_(game.NumPlayers() + 2, 1.0) {}
+    p_(p)  { // +1 for chance
+      opponent_info_states_ = info_states_;
+    }
 
   virtual ~SECFRSolver() = default;
 
@@ -62,15 +62,17 @@ class SECFRSolver : public algorithms::CFRSolverBase {
 
  protected:
   const Policy* fixed_opponent_policy_;
-  double p_;
-  int fixed_player_index_;
-  std::vector<double> root_reach_probs_;
-  std::unordered_map<std::string, double> reach_probabilities_cache_;
+  double p_;  // lambda (confidence) in the paper
+  algorithms::CFRInfoStateValuesTable opponent_info_states_;
 
   template <typename StateType>
   double LagrRecur(
-      StateType& state, int updating_player, bool updating_current_player,
-      const std::vector<double>& reach_probabilities);
+      StateType& state, int updating_player, bool use_exploitation,
+      const std::vector<double>& reach_probabilities,
+      double fixed_opponent_reach);
+  std::vector<double> GetOpponentPolicy(const std::string& info_state, const std::vector<Action>& legal_actions);
+  void ApplyRegretMatchingPlusResetOpponentInfoStates();
+  void ApplyRegretMatchingOpponentInfostates();
 };
 }  // namespace papers_with_code
 }  // namespace open_spiel

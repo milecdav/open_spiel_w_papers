@@ -21,6 +21,7 @@ ABSL_FLAG(bool, cfr, false, "Whether to run Vanilla CFR");
 ABSL_FLAG(bool, rnr, false, "Whether to run RNR");
 ABSL_FLAG(bool, secfr, false, "Whether to run SECFRSolver");
 ABSL_FLAG(int, target_player, 0, "Target player for RNR");
+ABSL_FLAG(std::string, game, "leduc_poker", "Game to run");
 
 
 #include "algorithms/cfr.h"
@@ -36,7 +37,15 @@ ABSL_FLAG(int, target_player, 0, "Target player for RNR");
 #include "policy.h"
 
 #include <iostream>
+#include <fstream>
 
+std::string RESULTS_DIR = "results/dlr/";
+
+struct SweepResult {
+  double p;
+  double expl;
+  double gain;
+};
 
 namespace open_spiel {
 namespace papers_with_code {
@@ -67,8 +76,7 @@ namespace {
     return best_response_value - GetGameValueForPlayer(game, player_index);
   }
 
-  void RunVanillaCFR(int iterations, bool save_states) {
-    std::shared_ptr<const Game> game = LoadGame("leduc_poker");
+  void RunVanillaCFR(std::shared_ptr<const Game> game, int iterations, bool save_states) {
     algorithms::CFRSolverBase solver(*game, false, true, true, save_states);
     for (int i = 0; i < iterations; i++) {
       solver.EvaluateAndUpdatePolicy();
@@ -85,8 +93,7 @@ namespace {
     std::cout << "Game value for player 1: " << GetGameValueForPlayer(game, 1) << "\n";
   }
 
-  void RunMCCFR(int iterations) {
-    std::shared_ptr<const Game> game = LoadGame("leduc_poker");
+  void RunMCCFR(std::shared_ptr<const Game> game, int iterations) {
     algorithms::ExternalSamplingMCCFRSolver solver(*game);
     for (int i = 0; i < iterations; i++) {
       solver.RunIteration();
@@ -101,7 +108,7 @@ namespace {
     }
   }
 
-  void RunRNR(std::shared_ptr<const Game> game, int iterations, double p, int target_player, std::shared_ptr<Policy> fixed_opponent_policy) {
+  std::pair<double, double> RunRNR(std::shared_ptr<const Game> game, int iterations, double p, int target_player, std::shared_ptr<Policy> fixed_opponent_policy) {
     std::cout << "Running RNR with p = " << p << std::endl;
     algorithms::RNRSolver solver(*game, target_player, fixed_opponent_policy.get(), p, false, true, true, true);
     for (int i = 0; i < iterations; i++) {
@@ -109,12 +116,15 @@ namespace {
     }
     std::shared_ptr<Policy> average_policy = solver.AveragePolicy();
     double adjusted_br_value = AdjustedBRValue(game, 1 - target_player, average_policy);
+    double expected_return = algorithms::ExpectedReturns(*game->NewInitialState(), {average_policy.get(), fixed_opponent_policy.get()}, -1)[target_player];
     std::cout << "Adjusted best response value for player " << 1 - target_player << ": " << adjusted_br_value << "\n";
     std::cout << "Expected return value for player " << target_player << ": " << algorithms::ExpectedReturns(*game->NewInitialState(), {average_policy.get(), fixed_opponent_policy.get()}, -1)[target_player] << "\n";
     std::cout << "--------------------------------" << std::endl;
+
+    return std::make_pair(adjusted_br_value, expected_return);
   }
 
-  void RunSECFRSolver(std::shared_ptr<const Game> game, int iterations, double p, int target_player, std::shared_ptr<Policy> fixed_opponent_policy) {
+  std::pair<double, double> RunSECFRSolver(std::shared_ptr<const Game> game, int iterations, double p, int target_player, std::shared_ptr<Policy> fixed_opponent_policy) {
     std::cout << "Running SECFRSolver with p = " << p << std::endl;
     SECFRSolver solver(*game, fixed_opponent_policy.get(), p, false, true, true, true);
     for (int i = 0; i < iterations; i++) {
@@ -122,25 +132,81 @@ namespace {
     }
     std::shared_ptr<Policy> average_policy = solver.AveragePolicy();
     double adjusted_br_value = AdjustedBRValue(game, 1 - target_player, average_policy);
+    double expected_return = algorithms::ExpectedReturns(*game->NewInitialState(), {average_policy.get(), fixed_opponent_policy.get()}, -1)[target_player];
     std::cout << "Adjusted best response value for player " << 1 - target_player << ": " << adjusted_br_value << "\n";
     std::cout << "Expected return value for player " << target_player << ": " << algorithms::ExpectedReturns(*game->NewInitialState(), {average_policy.get(), fixed_opponent_policy.get()}, -1)[target_player] << "\n";
     std::cout << "--------------------------------" << std::endl;
+    return std::make_pair(adjusted_br_value, expected_return);
   }
 
-  void RunSweep(std::shared_ptr<const Game> game, int iterations, int target_player, std::shared_ptr<Policy> fixed_opponent_policy, std::function<void(std::shared_ptr<const Game>, int, double, int, std::shared_ptr<Policy>)> run_function) {
+  std::vector<SweepResult> RunSweep(std::shared_ptr<const Game> game, int iterations, int target_player, std::shared_ptr<Policy> fixed_opponent_policy, std::function<std::pair<double, double>(std::shared_ptr<const Game>, int, double, int, std::shared_ptr<Policy>)> run_function) {
+    std::vector<SweepResult> results;
     for(double p = 0.0; p <= 1.0; p += 0.1) {
-      run_function(game, iterations, p, target_player, fixed_opponent_policy);
+      std::pair<double, double> result = run_function(game, iterations, p, target_player, fixed_opponent_policy);
+      results.push_back({p, result.first, result.second});
     }
+    return results; 
   }
 
-  void RunSweep(int iterations, int target_player, std::function<void(std::shared_ptr<const Game>, int, double, int, std::shared_ptr<Policy>)> run_function) {
-    std::shared_ptr<const Game> game = LoadGame("leduc_poker");
+  std::vector<SweepResult> RunSweep(std::shared_ptr<const Game> game, int iterations, int target_player, std::function<std::pair<double, double>(std::shared_ptr<const Game>, int, double, int, std::shared_ptr<Policy>)> run_function) {
     std::shared_ptr<Policy> fixed_opponent_policy = std::make_shared<TabularPolicy>(*game);
-    RunSweep(game, iterations, target_player, fixed_opponent_policy, run_function);
+    return RunSweep(game, iterations, target_player, fixed_opponent_policy, run_function);
+  }
+
+  void SaveSweepResults(const std::vector<SweepResult>& results, std::string algorithm_name, std::string filename) {
+    std::ofstream file(filename);
+    file << "algorithm_name," << algorithm_name << "\n";
+    file << "p,expl,gain\n";
+    for(const SweepResult& result : results) {
+      file << result.p << "," << result.expl << "," << result.gain << "\n";
+    }
+    file.close();
+  }
+
+  std::shared_ptr<const Game> GetGameFromFlag(std::string flag) {
+    std::vector<std::string> implemented_games = {
+      "leduc_poker",
+      "goofspielN",
+      "liars_dice(S,D)"
+    };
+    if(flag == "leduc_poker") {
+      return LoadGame("leduc_poker");
+    }
+    if(flag.substr(0, 9) == "goofspiel" && flag.length() > 9) {
+      std::string num_cards =
+      flag.substr(9); // Extract number after "goofspiel"
+      return LoadGame("turn_based_simultaneous_game(game=goofspiel(imp_info="
+                  "True,num_cards=" + num_cards + ",points_order=descending))");
+    }
+    if (flag.substr(0, 10) == "liars_dice" && flag.length() > 12) {
+      auto left_bracket = flag.find('(');
+      auto right_bracket = flag.find(')');
+      if (left_bracket == std::string::npos || right_bracket == std::string::npos || right_bracket <= left_bracket + 1) {
+        throw std::runtime_error("Invalid flag format");
+      }
+      std::string parameters = flag.substr(left_bracket + 1, right_bracket - left_bracket - 1);
+      auto comma = parameters.find(',');
+
+      if (comma == std::string::npos) {
+          // liars_dice(S)
+          return LoadGame("liars_dice(dice_sides=" + parameters + ")");
+      } else {
+          // liars_dice(S,D)
+          std::string dice_sides = parameters.substr(0, comma);
+          std::string numdice = parameters.substr(comma + 1);
+          return LoadGame("liars_dice(dice_sides=" + dice_sides + ",numdice=" + numdice + ")");
+      }
+    }
+    if(flag == "leduc_poker") {
+      return LoadGame("leduc_poker");
+    } 
+    throw std::runtime_error("Invalid game flag: " + flag + " not in " + absl::StrJoin(implemented_games, ", "));
   }
 } // unnamed namespace
 } // namespace papers_with_code
 } // namespace open_spiel
+
+
 
 int main(int argc, char **argv) {
 
@@ -152,23 +218,29 @@ int main(int argc, char **argv) {
   int iterations = absl::GetFlag(FLAGS_iterations);
   bool save_states = absl::GetFlag(FLAGS_save_states);
   bool run_secfr = absl::GetFlag(FLAGS_secfr);
-
+  std::shared_ptr<const open_spiel::Game> game = open_spiel::papers_with_code::GetGameFromFlag(absl::GetFlag(FLAGS_game));
 
   if(run_mccfr) {
-    std::cout << "Running MCCFR with " << iterations << " iterations" << std::endl;
-    open_spiel::papers_with_code::RunMCCFR(iterations);
+    std::cout << "Running MCCFR with " << iterations << " iterations" << " and game " << game->ToString() << std::endl;
+    std::cout << std::flush;
+    open_spiel::papers_with_code::RunMCCFR(game, iterations);
   }
   if(run_vanilla_cfr) {
-    std::cout << "Running Vanilla CFR with " << iterations << " iterations" << std::endl;
-    open_spiel::papers_with_code::RunVanillaCFR(iterations, save_states);
+    std::cout << "Running Vanilla CFR with " << iterations << " iterations" << " and game " << game->ToString() << std::endl;
+    std::cout << std::flush;
+    open_spiel::papers_with_code::RunVanillaCFR(game, iterations, save_states);
   }
   if(run_rnr) {
-    std::cout << "Running RNR with " << iterations << " iterations and target player " << target_player << std::endl;
-    open_spiel::papers_with_code::RunSweep(iterations, target_player, open_spiel::papers_with_code::RunRNR);
+    std::cout << "Running RNR with " << iterations << " iterations and target player " << target_player << " and game " << game->ToString() << std::endl;
+    std::cout << std::flush;
+    std::vector<SweepResult> results = open_spiel::papers_with_code::RunSweep(game, iterations, target_player, open_spiel::papers_with_code::RunRNR);
+    open_spiel::papers_with_code::SaveSweepResults(results, "RNR", RESULTS_DIR + "rnr_results.csv");
   }
   if(run_secfr) {
-    std::cout << "Running SECFRSolver with " << iterations << " iterations and target player " << target_player << std::endl;
-    open_spiel::papers_with_code::RunSweep(iterations, target_player, open_spiel::papers_with_code::RunSECFRSolver);
+    std::cout << "Running SECFRSolver with " << iterations << " iterations and target player " << target_player << " and game " << game->ToString() << std::endl;
+    std::cout << std::flush;
+    std::vector<SweepResult> results = open_spiel::papers_with_code::RunSweep(game, iterations, target_player, open_spiel::papers_with_code::RunSECFRSolver);
+    open_spiel::papers_with_code::SaveSweepResults(results, "SECFR", RESULTS_DIR + "secfr_results.csv");
   }
 
   return 0;
