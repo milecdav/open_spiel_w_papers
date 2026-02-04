@@ -3,6 +3,8 @@ add_library (game_transforms OBJECT
   coop_to_1p.h
   efg_writer.cc
   efg_writer.h
+  matrix_valued_states.cc
+  matrix_valued_states.h
   misere.cc
   misere.h
   normal_form_extensive_game.cc
@@ -10,7 +12,7 @@ add_library (game_transforms OBJECT
   repeated_game.cc
   repeated_game.h
   start_at.cc
-  start_at.h  
+  start_at.h
   turn_based_simultaneous_game.cc
   turn_based_simultaneous_game.h
 )
@@ -57,3 +59,9 @@ add_executable(start_at_test
   ${OPEN_SPIEL_OBJECTS}
   $<TARGET_OBJECTS:tests>)
 add_test(start_at_test start_at_test)
+
+add_executable(matrix_valued_states_test
+  matrix_valued_states_test.cc
+  ${OPEN_SPIEL_OBJECTS}
+  $<TARGET_OBJECTS:tests>)
+add_test(matrix_valued_states_test matrix_valued_states_test)
