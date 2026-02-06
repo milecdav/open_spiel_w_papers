@@ -72,3 +72,6 @@ analysis*.txt
 
 # Results
 results/
+
+# Papers
+papers/
