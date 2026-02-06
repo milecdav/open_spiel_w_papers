@@ -15,8 +15,10 @@
 #include "open_spiel/game_transforms/matrix_valued_states.h"
 
 #include <algorithm>
+#include <functional>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -1056,6 +1058,128 @@ CreateMVSGameWithSubtreePureStrategies(
     MVSGame::DepthMode depth_mode) {
   return std::make_shared<MVSGameWithSubtreePureStrategies>(
       std::move(game), depth_limit, depth_mode);
+}
+
+// ============================================================================
+// MVS Utility Functions
+// ============================================================================
+
+std::unordered_map<std::string, double> ExtractCFVsFromMVSSolution(
+    const MVSGameWithSubtreePureStrategies& mvs_game,
+    const Policy& mvs_policy,
+    Player player) {
+  std::unordered_map<std::string, double> cfvs;
+  std::unordered_map<std::string, double> reach_sums;
+
+  std::function<void(const State&, double, double)> traverse =
+      [&](const State& state, double reach_p0, double reach_p1) {
+    if (state.IsTerminal()) return;
+
+    auto* mvs_state =
+        dynamic_cast<const MVSStateWithSubtreePureStrategies*>(&state);
+    if (mvs_state &&
+        mvs_state->GetPhase() == MVSState::Phase::kPortfolioP1) {
+      const State& underlying = mvs_state->GetUnderlyingState();
+      std::string info_state = underlying.InformationStateString(player);
+
+      auto value = algorithms::ExpectedReturns(state, mvs_policy, -1, true);
+
+      double opponent_reach = (player == 0) ? reach_p1 : reach_p0;
+      cfvs[info_state] += opponent_reach * value[player];
+      reach_sums[info_state] += opponent_reach;
+      return;
+    }
+
+    if (state.IsChanceNode()) {
+      for (const auto& [action, prob] : state.ChanceOutcomes()) {
+        auto next = state.Clone();
+        next->ApplyAction(action);
+        traverse(*next, reach_p0 * prob, reach_p1 * prob);
+      }
+    } else {
+      Player acting = state.CurrentPlayer();
+      auto actions_probs = mvs_policy.GetStatePolicy(state, acting);
+      if (actions_probs.empty()) {
+        auto legal = state.LegalActions();
+        double prob = 1.0 / legal.size();
+        for (Action a : legal) {
+          auto next = state.Clone();
+          next->ApplyAction(a);
+          double new_reach_p0 = reach_p0 * (acting == 0 ? prob : 1.0);
+          double new_reach_p1 = reach_p1 * (acting == 1 ? prob : 1.0);
+          traverse(*next, new_reach_p0, new_reach_p1);
+        }
+      } else {
+        for (const auto& [action, prob] : actions_probs) {
+          if (prob > 0) {
+            auto next = state.Clone();
+            next->ApplyAction(action);
+            double new_reach_p0 = reach_p0 * (acting == 0 ? prob : 1.0);
+            double new_reach_p1 = reach_p1 * (acting == 1 ? prob : 1.0);
+            traverse(*next, new_reach_p0, new_reach_p1);
+          }
+        }
+      }
+    }
+  };
+
+  traverse(*mvs_game.NewInitialState(), 1.0, 1.0);
+  return cfvs;
+}
+
+std::unordered_map<std::string, double> ExtractReachProbsFromMVS(
+    const MVSGameWithSubtreePureStrategies& mvs_game,
+    const Policy& mvs_policy,
+    Player reaching_player) {
+  std::unordered_map<std::string, double> reach_probs;
+
+  std::function<void(const State&, double)> traverse =
+      [&](const State& state, double reach) {
+    if (state.IsTerminal()) return;
+
+    auto* mvs_state =
+        dynamic_cast<const MVSStateWithSubtreePureStrategies*>(&state);
+    if (mvs_state &&
+        mvs_state->GetPhase() == MVSState::Phase::kPortfolioP1) {
+      const State& underlying = mvs_state->GetUnderlyingState();
+      std::string hist = underlying.HistoryString();
+      reach_probs[hist] = reach;
+      return;
+    }
+
+    if (state.IsChanceNode()) {
+      for (const auto& [action, prob] : state.ChanceOutcomes()) {
+        auto next = state.Clone();
+        next->ApplyAction(action);
+        traverse(*next, reach * prob);
+      }
+    } else {
+      Player acting = state.CurrentPlayer();
+      auto actions_probs = mvs_policy.GetStatePolicy(state, acting);
+      if (actions_probs.empty()) {
+        auto legal = state.LegalActions();
+        double prob = 1.0 / legal.size();
+        for (Action a : legal) {
+          auto next = state.Clone();
+          next->ApplyAction(a);
+          double factor = (acting == reaching_player) ? prob : 1.0;
+          traverse(*next, reach * factor);
+        }
+      } else {
+        for (const auto& [action, prob] : actions_probs) {
+          if (prob > 0) {
+            auto next = state.Clone();
+            next->ApplyAction(action);
+            double factor = (acting == reaching_player) ? prob : 1.0;
+            traverse(*next, reach * factor);
+          }
+        }
+      }
+    }
+  };
+
+  traverse(*mvs_game.NewInitialState(), 1.0);
+  return reach_probs;
 }
 
 }  // namespace open_spiel

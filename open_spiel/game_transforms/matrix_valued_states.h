@@ -325,6 +325,41 @@ std::vector<std::shared_ptr<Policy>> ConvertToPortfolio(
 std::vector<std::shared_ptr<Policy>> EnumerateSubtreePureStrategies(
     const State& state, Player player);
 
+// ============================================================================
+// MVS Utility Functions
+// ============================================================================
+
+// Extract counterfactual values from an MVS solution at depth-limited states.
+// Traverses the MVS game tree and computes CFV(I) = sum pi_{-i}(h) * v(h)
+// at each depth-limited info set, where v(h) is the expected value under
+// the MVS equilibrium policy.
+//
+// Parameters:
+//   mvs_game: The MVS game with subtree pure strategies
+//   mvs_policy: Equilibrium policy on the MVS game
+//   player: Player whose CFVs we extract
+//
+// Returns: Map from (original game) info state string to counterfactual value.
+std::unordered_map<std::string, double> ExtractCFVsFromMVSSolution(
+    const MVSGameWithSubtreePureStrategies& mvs_game,
+    const Policy& mvs_policy,
+    Player player);
+
+// Extract reach probabilities from an MVS solution at depth-limited states.
+// Computes reach probability (chance * player's own actions) for a given
+// player to each depth-limited state.
+//
+// Parameters:
+//   mvs_game: The MVS game with subtree pure strategies
+//   mvs_policy: Equilibrium policy on the MVS game
+//   reaching_player: Player whose reach probabilities we compute
+//
+// Returns: Map from underlying state history string to reach probability.
+std::unordered_map<std::string, double> ExtractReachProbsFromMVS(
+    const MVSGameWithSubtreePureStrategies& mvs_game,
+    const Policy& mvs_policy,
+    Player reaching_player);
+
 }  // namespace open_spiel
 
 #endif  // OPEN_SPIEL_GAME_TRANSFORMS_MATRIX_VALUED_STATES_H_

@@ -11,10 +11,16 @@ add_library (game_transforms OBJECT
   normal_form_extensive_game.h
   repeated_game.cc
   repeated_game.h
+  resolving_gadget.cc
+  resolving_gadget.h
+  subgame_utils.cc
+  subgame_utils.h
   start_at.cc
   start_at.h
   turn_based_simultaneous_game.cc
   turn_based_simultaneous_game.h
+  unsafe_subgame.cc
+  unsafe_subgame.h
 )
 target_include_directories (game_transforms PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
@@ -65,3 +71,15 @@ add_executable(matrix_valued_states_test
   ${OPEN_SPIEL_OBJECTS}
   $<TARGET_OBJECTS:tests>)
 add_test(matrix_valued_states_test matrix_valued_states_test)
+
+add_executable(resolving_gadget_test
+  resolving_gadget_test.cc
+  ${OPEN_SPIEL_OBJECTS}
+  $<TARGET_OBJECTS:tests>)
+add_test(resolving_gadget_test resolving_gadget_test)
+
+add_executable(unsafe_subgame_test
+  unsafe_subgame_test.cc
+  ${OPEN_SPIEL_OBJECTS}
+  $<TARGET_OBJECTS:tests>)
+add_test(unsafe_subgame_test unsafe_subgame_test)
