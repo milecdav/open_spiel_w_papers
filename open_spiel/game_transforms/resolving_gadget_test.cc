@@ -28,6 +28,7 @@
 #include "open_spiel/algorithms/tabular_exploitability.h"
 #include "open_spiel/game_transforms/matrix_valued_states.h"
 #include "open_spiel/game_transforms/subgame_utils.h"
+#include "open_spiel/game_transforms/turn_based_simultaneous_game.h"
 #include "open_spiel/game_transforms/unsafe_subgame.h"
 #include "open_spiel/policy.h"
 #include "open_spiel/spiel.h"
@@ -347,37 +348,31 @@ std::unordered_map<int, std::unordered_set<std::string>> CollectRound1InfoStates
   return round1_infostates;
 }
 
-// Group subgame roots by the betting sequence (public state)
-// This identifies the 5 distinct subgames in Leduc
-std::unordered_map<std::string, std::vector<std::unique_ptr<State>>>
-GroupSubgamesByBettingSequence(std::vector<std::unique_ptr<State>> roots) {
-  std::unordered_map<std::string, std::vector<std::unique_ptr<State>>> grouped;
-
-  for (auto& root : roots) {
-    // Extract betting sequence from history
-    // In Leduc, the history includes chance actions (card deals) and player actions
-    // We want to group by the player actions only (the betting sequence)
-    std::string history = root->HistoryString();
-
-    // Parse history to extract just the betting actions
-    // Leduc history format: chance actions are card indices, player actions are 0/1 (fold/call/check) or 2 (raise)
-    // For simplicity, we'll use the action sequence after the first two chance nodes
-    auto full_history = root->FullHistory();
-    std::string betting_seq;
-    int chance_count = 0;
-    for (const auto& item : full_history) {
-      if (item.player == kChancePlayerId) {
-        chance_count++;
-      } else if (chance_count >= 2 && chance_count < 3) {
-        // This is a round 1 betting action
-        betting_seq += std::to_string(item.action);
+// Collect info states for each player by traversing from subgame roots.
+std::array<std::unordered_set<std::string>, 2>
+CollectSubgameInfoStatesPerPlayer(
+    const std::vector<std::unique_ptr<State>>& roots) {
+  std::array<std::unordered_set<std::string>, 2> result;
+  std::function<void(const State&)> traverse = [&](const State& state) {
+    if (state.IsTerminal()) return;
+    if (state.IsChanceNode()) {
+      for (const auto& [action, prob] : state.ChanceOutcomes()) {
+        auto child = state.Clone();
+        child->ApplyAction(action);
+        traverse(*child);
+      }
+    } else {
+      Player p = state.CurrentPlayer();
+      result[p].insert(state.InformationStateString(p));
+      for (Action action : state.LegalActions()) {
+        auto child = state.Clone();
+        child->ApplyAction(action);
+        traverse(*child);
       }
     }
-
-    grouped[betting_seq].push_back(std::move(root));
-  }
-
-  return grouped;
+  };
+  for (const auto& root : roots) traverse(*root);
+  return result;
 }
 
 void TestLeducMVSWithGadgetResolving() {
@@ -424,15 +419,15 @@ void TestLeducMVSWithGadgetResolving() {
   std::cout << "  Step 3: Collecting subgame roots..." << std::endl;
   auto round1_infostates = CollectRound1InfoStates(*game);
   auto round2_roots = CollectStatesAtRound(*game, 3);
-  auto grouped_subgames = GroupSubgamesByBettingSequence(std::move(round2_roots));
+  auto grouped_subgames = GroupStatesByPublicObservation(*game, std::move(round2_roots));
 
   std::cout << "    Round 1 info states: P0=" << round1_infostates[0].size()
             << ", P1=" << round1_infostates[1].size() << std::endl;
-  std::cout << "    Distinct subgames (betting sequences): "
+  std::cout << "    Distinct subgames (public observations): "
             << grouped_subgames.size() << std::endl;
 
-  for (const auto& [seq, roots] : grouped_subgames) {
-    std::cout << "      Sequence '" << seq << "': " << roots.size()
+  for (const auto& [obs, roots] : grouped_subgames) {
+    std::cout << "      Observation '" << obs << "': " << roots.size()
               << " root states" << std::endl;
   }
 
@@ -514,11 +509,12 @@ void TestLeducMVSWithGadgetResolving() {
     Player resolving_player = 1 - non_resolving_player;
     const auto& cf_values = (resolving_player == 0) ? cfvs_p0 : cfvs_p1;
     const auto& reach_probs = (non_resolving_player == 0) ? reach_probs_p0 : reach_probs_p1;
-    std::string player_marker = absl::StrCat("[Observer: ", non_resolving_player, "]");
 
     int subgame_count = 0;
-    for (auto& [betting_seq, roots] : grouped_subgames) {
+    for (auto& [pub_obs, roots] : grouped_subgames) {
       subgame_count++;
+
+      auto info_states_per_player = CollectSubgameInfoStatesPerPlayer(roots);
 
       std::vector<SubgameRoot> gadget_roots;
       for (const auto& root : roots) {
@@ -553,7 +549,7 @@ void TestLeducMVSWithGadgetResolving() {
       for (const auto& [gadget_info_state, actions_probs] : tabular_gadget_policy.PolicyTable()) {
         if (gadget_info_state.find(prefix) == 0) {
           std::string original_info_state = gadget_info_state.substr(prefix.length());
-          if (original_info_state.find(player_marker) != std::string::npos) {
+          if (info_states_per_player[non_resolving_player].count(original_info_state) > 0) {
             combined_policy->SetStatePolicy(original_info_state, actions_probs);
             extracted_count++;
           }
@@ -670,8 +666,8 @@ void TestSafeVsUnsafeResolving() {
   // Collect round 1 info states for trunk
   auto round1_infostates = CollectRound1InfoStates(*game);
 
-  // Group subgames by betting sequence
-  auto grouped = GroupSubgamesByBettingSequence(CollectStatesAtRound(*game, 3));
+  // Group subgames by public observation
+  auto grouped = GroupStatesByPublicObservation(*game, CollectStatesAtRound(*game, 3));
 
   // =========================================================================
   // Safe Re-Solving (using gadgets)
@@ -695,9 +691,10 @@ void TestSafeVsUnsafeResolving() {
     Player resolving_player = 1 - non_resolving_player;
     const auto& cf_values = (resolving_player == 0) ? cfvs_p0 : cfvs_p1;
     const auto& reach_probs = (non_resolving_player == 0) ? reach_probs_p0 : reach_probs_p1;
-    std::string player_marker = absl::StrCat("[Observer: ", non_resolving_player, "]");
 
-    for (auto& [betting_seq, roots] : grouped) {
+    for (auto& [pub_obs, roots] : grouped) {
+      auto info_states_per_player = CollectSubgameInfoStatesPerPlayer(roots);
+
       std::vector<SubgameRoot> gadget_roots;
       for (const auto& root : roots) {
         SubgameRoot sr;
@@ -720,7 +717,7 @@ void TestSafeVsUnsafeResolving() {
       for (const auto& [gadget_is, actions_probs] : gadget_policy.PolicyTable()) {
         if (gadget_is.find(prefix) == 0) {
           std::string orig_is = gadget_is.substr(prefix.length());
-          if (orig_is.find(player_marker) != std::string::npos) {
+          if (info_states_per_player[non_resolving_player].count(orig_is) > 0) {
             safe_policy->SetStatePolicy(orig_is, actions_probs);
           }
         }
@@ -752,7 +749,7 @@ void TestSafeVsUnsafeResolving() {
   }
 
   // Solve each subgame directly with chance node weighted by total reaches
-  for (auto& [betting_seq, roots] : grouped) {
+  for (auto& [pub_obs, roots] : grouped) {
     // Compute total reach = chance × π_0 × π_1 for each root
     std::vector<std::unique_ptr<State>> subgame_roots;
     std::vector<double> total_reaches;
@@ -810,6 +807,246 @@ void TestSafeVsUnsafeResolving() {
 }
 
 // =============================================================================
+// Goofspiel Test with MVS and Gadgets
+// =============================================================================
+
+void TestGoofspielMVSWithGadgetResolving() {
+  std::cout << "TestGoofspielMVSWithGadgetResolving..." << std::endl;
+
+  // Goofspiel(4) with imperfect info and descending point order.
+  // Turn-based wrapper converts simultaneous moves into sequential.
+  auto game = LoadGameAsTurnBased(
+      "goofspiel",
+      {{"num_cards", GameParameter(4)},
+       {"imp_info", GameParameter(true)},
+       {"points_order", GameParameter(std::string("descending"))}});
+
+  // Step 1: Solve full game for baseline
+  std::cout << "  Step 1: Solving full game for baseline..." << std::endl;
+  algorithms::CFRSolverBase full_solver(
+      *game, /*alternating_updates=*/true,
+      /*linear_averaging=*/true, /*regret_matching_plus=*/true);
+
+  for (int i = 0; i < 500; ++i) {
+    full_solver.EvaluateAndUpdatePolicy();
+  }
+  auto full_policy = full_solver.AveragePolicy();
+  double full_exploitability = algorithms::Exploitability(*game, *full_policy);
+  std::cout << "    Full game exploitability: " << full_exploitability
+            << std::endl;
+
+  // Step 2: Solve MVS game for the trunk
+  // depth_limit=4 with kActionBased: play until 4 player actions (two full
+  // rounds of bidding: P0+P1 bid twice), then use MVS for remaining rounds.
+  std::cout << "  Step 2: Solving MVS game for trunk..." << std::endl;
+  auto mvs_game = CreateMVSGameWithSubtreePureStrategies(
+      game, /*depth_limit=*/4, MVSGame::DepthMode::kActionBased);
+
+  algorithms::CFRSolverBase mvs_solver(
+      *mvs_game, /*alternating_updates=*/true,
+      /*linear_averaging=*/true, /*regret_matching_plus=*/true);
+
+  for (int i = 0; i < 500; ++i) {
+    mvs_solver.EvaluateAndUpdatePolicy();
+  }
+  auto mvs_policy = mvs_solver.AveragePolicy();
+  double mvs_exploitability =
+      algorithms::Exploitability(*mvs_game, *mvs_policy);
+  std::cout << "    MVS game exploitability: " << mvs_exploitability
+            << std::endl;
+
+  // Step 3: Collect subgame roots and group by public observation
+  std::cout << "  Step 3: Collecting subgame roots..." << std::endl;
+  auto subgame_roots = CollectStatesAtDepth(*game, 4);
+  std::cout << "    Total subgame root states: " << subgame_roots.size()
+            << std::endl;
+
+  auto grouped_subgames =
+      GroupStatesByPublicObservation(*game, std::move(subgame_roots));
+  std::cout << "    Distinct subgames (public observations): "
+            << grouped_subgames.size() << std::endl;
+
+  for (const auto& [obs, roots] : grouped_subgames) {
+    std::cout << "      Observation '" << obs << "': " << roots.size()
+              << " root states" << std::endl;
+  }
+
+  // Step 4: Build combined policy using MVS trunk strategy
+  std::cout << "  Step 4: Building combined policy with MVS trunk..."
+            << std::endl;
+  auto combined_policy = std::make_shared<TabularPolicy>();
+
+  std::function<void(const State&, const State&)> copy_mvs_trunk =
+      [&](const State& mvs_state, const State& orig_state) {
+    if (orig_state.IsTerminal()) return;
+
+    auto* mvs_s =
+        dynamic_cast<const MVSStateWithSubtreePureStrategies*>(&mvs_state);
+    if (mvs_s && mvs_s->GetPhase() != MVSState::Phase::kNormal) {
+      return;
+    }
+
+    if (orig_state.IsChanceNode()) {
+      for (const auto& [action, prob] : orig_state.ChanceOutcomes()) {
+        auto next_orig = orig_state.Clone();
+        next_orig->ApplyAction(action);
+        auto next_mvs = mvs_state.Clone();
+        next_mvs->ApplyAction(action);
+        copy_mvs_trunk(*next_mvs, *next_orig);
+      }
+    } else {
+      Player player = orig_state.CurrentPlayer();
+      std::string info_state = orig_state.InformationStateString(player);
+      auto actions_probs = mvs_policy->GetStatePolicy(mvs_state, player);
+      if (!actions_probs.empty()) {
+        combined_policy->SetStatePolicy(info_state, actions_probs);
+      }
+      for (Action action : orig_state.LegalActions()) {
+        auto next_orig = orig_state.Clone();
+        next_orig->ApplyAction(action);
+        auto next_mvs = mvs_state.Clone();
+        next_mvs->ApplyAction(action);
+        copy_mvs_trunk(*next_mvs, *next_orig);
+      }
+    }
+  };
+  copy_mvs_trunk(*mvs_game->NewInitialState(), *game->NewInitialState());
+
+  std::cout << "    Trunk policy extracted: "
+            << combined_policy->PolicyTable().size() << " info states"
+            << std::endl;
+
+  // Step 5: Extract CFVs and reach probs from MVS solution
+  std::cout << "  Step 5: Extracting CFVs from MVS solution..." << std::endl;
+  auto cfvs_p0 = ExtractCFVsFromMVSSolution(*mvs_game, *mvs_policy, 0);
+  auto cfvs_p1 = ExtractCFVsFromMVSSolution(*mvs_game, *mvs_policy, 1);
+  auto reach_probs_p0 = ExtractReachProbsFromMVS(*mvs_game, *mvs_policy, 0);
+  auto reach_probs_p1 = ExtractReachProbsFromMVS(*mvs_game, *mvs_policy, 1);
+
+  std::cout << "    CFVs extracted: P0=" << cfvs_p0.size()
+            << ", P1=" << cfvs_p1.size() << std::endl;
+  std::cout << "    Reach probs: P0=" << reach_probs_p0.size()
+            << ", P1=" << reach_probs_p1.size() << std::endl;
+
+  // Step 6: Re-solve each subgame using gadgets
+  std::cout << "  Step 6: Re-solving subgames with gadgets..." << std::endl;
+
+  auto resolve_for_player = [&](Player non_resolving_player,
+                                const std::string& player_name) {
+    Player resolving_player = 1 - non_resolving_player;
+    const auto& cf_values = (resolving_player == 0) ? cfvs_p0 : cfvs_p1;
+    const auto& reach_probs =
+        (non_resolving_player == 0) ? reach_probs_p0 : reach_probs_p1;
+
+    int subgame_count = 0;
+    for (auto& [pub_obs, roots] : grouped_subgames) {
+      subgame_count++;
+
+      auto info_states_per_player = CollectSubgameInfoStatesPerPlayer(roots);
+
+      std::vector<SubgameRoot> gadget_roots;
+      for (const auto& root : roots) {
+        SubgameRoot sr;
+        sr.state = root->Clone();
+        sr.info_state_string = root->InformationStateString(resolving_player);
+        std::string hist = root->HistoryString();
+        auto it = reach_probs.find(hist);
+        sr.reach_prob = (it != reach_probs.end()) ? it->second : 0.0;
+        if (sr.reach_prob > 0) {
+          gadget_roots.push_back(std::move(sr));
+        }
+      }
+
+      if (gadget_roots.empty()) continue;
+
+      auto gadget = CreateGadgetGame(game, std::move(gadget_roots),
+                                     resolving_player, cf_values);
+
+      algorithms::CFRSolverBase gadget_solver(*gadget, true, true, true);
+      for (int i = 0; i < 500; ++i) {
+        gadget_solver.EvaluateAndUpdatePolicy();
+      }
+
+      TabularPolicy tabular_gadget_policy =
+          gadget_solver.TabularAveragePolicy();
+
+      const std::string prefix = "gadget_F:subgame:";
+      int extracted_count = 0;
+      for (const auto& [gadget_info_state, actions_probs] :
+           tabular_gadget_policy.PolicyTable()) {
+        if (gadget_info_state.find(prefix) == 0) {
+          std::string original_info_state =
+              gadget_info_state.substr(prefix.length());
+          if (info_states_per_player[non_resolving_player].count(
+                  original_info_state) > 0) {
+            combined_policy->SetStatePolicy(original_info_state, actions_probs);
+            extracted_count++;
+          }
+        }
+      }
+      std::cout << "      Subgame " << subgame_count << ": extracted "
+                << extracted_count << " policies for " << player_name
+                << std::endl;
+    }
+  };
+
+  std::cout << "    Re-solving for P1 (P0 is resolving player)..." << std::endl;
+  resolve_for_player(1, "P1");
+
+  std::cout << "    Re-solving for P0 (P1 is resolving player)..." << std::endl;
+  resolve_for_player(0, "P0");
+
+  std::cout << "    Combined policy has "
+            << combined_policy->PolicyTable().size()
+            << " info states before fill-in" << std::endl;
+
+  // Step 7: Evaluate combined policy
+  std::cout << "  Step 7: Evaluating combined policy..." << std::endl;
+  auto final_policy = std::make_shared<TabularPolicy>(*combined_policy);
+
+  int filled_count = 0;
+  std::function<void(const State&)> fill_missing = [&](const State& state) {
+    if (state.IsTerminal()) return;
+    if (state.IsChanceNode()) {
+      for (const auto& [action, prob] : state.ChanceOutcomes()) {
+        auto next = state.Clone();
+        next->ApplyAction(action);
+        fill_missing(*next);
+      }
+    } else {
+      Player player = state.CurrentPlayer();
+      std::string info_state = state.InformationStateString(player);
+      auto existing = final_policy->GetStatePolicy(info_state);
+      if (existing.empty()) {
+        throw std::runtime_error("Info state not found in final policy: " +
+                                 info_state);
+      }
+      for (Action action : state.LegalActions()) {
+        auto next = state.Clone();
+        next->ApplyAction(action);
+        fill_missing(*next);
+      }
+    }
+  };
+  fill_missing(*game->NewInitialState());
+  std::cout << "    Filled " << filled_count
+            << " missing states from full policy" << std::endl;
+  std::cout << "    Final policy has " << final_policy->PolicyTable().size()
+            << " info states" << std::endl;
+
+  double combined_exploitability =
+      algorithms::Exploitability(*game, *final_policy);
+  std::cout << "    Combined policy exploitability: "
+            << combined_exploitability << std::endl;
+  std::cout << "    Full policy exploitability: " << full_exploitability
+            << std::endl;
+
+  SPIEL_CHECK_LT(combined_exploitability, 0.05);
+
+  std::cout << "TestGoofspielMVSWithGadgetResolving PASSED" << std::endl;
+}
+
+// =============================================================================
 // Main
 // =============================================================================
 
@@ -823,6 +1060,7 @@ int main(int argc, char** argv) {
   open_spiel::TestCFROnGadget();
   open_spiel::TestLeducMVSWithGadgetResolving();
   open_spiel::TestSafeVsUnsafeResolving();
+  open_spiel::TestGoofspielMVSWithGadgetResolving();
 
   std::cout << "\nAll tests passed!" << std::endl;
   return 0;

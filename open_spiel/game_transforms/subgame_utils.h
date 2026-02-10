@@ -89,6 +89,16 @@ std::unordered_map<std::string, double> ComputeCounterfactualValuesAtStates(
     Player player,
     const std::vector<const State*>& states);
 
+// Group states by their public observation string.
+// Uses kPublicStateObsType (perfect-recall, public only, no private info)
+// to obtain observation strings, then groups states with identical observations.
+// This is the general-purpose equivalent of game-specific grouping functions
+// (e.g., grouping Leduc states by betting sequence).
+std::unordered_map<std::string, std::vector<std::unique_ptr<State>>>
+GroupStatesByPublicObservation(
+    const Game& game,
+    std::vector<std::unique_ptr<State>> states);
+
 // Compute reach probabilities for a player at a set of target states.
 // The reach probability includes both the player's own action probabilities
 // and chance probabilities along the path.

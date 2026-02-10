@@ -179,6 +179,19 @@ std::vector<std::unique_ptr<State>> CollectStatesAtRound(
   return result;
 }
 
+std::unordered_map<std::string, std::vector<std::unique_ptr<State>>>
+GroupStatesByPublicObservation(
+    const Game& game,
+    std::vector<std::unique_ptr<State>> states) {
+  auto observer = game.MakeObserver(kPublicStateObsType, {});
+  std::unordered_map<std::string, std::vector<std::unique_ptr<State>>> grouped;
+  for (auto& state : states) {
+    std::string pub_obs = observer->StringFrom(*state, kDefaultPlayerId);
+    grouped[pub_obs].push_back(std::move(state));
+  }
+  return grouped;
+}
+
 std::unordered_map<std::string, double> ComputeCounterfactualValuesAtStates(
     const Game& game,
     const Policy& policy,
