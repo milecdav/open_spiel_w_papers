@@ -1,4 +1,6 @@
 add_library (game_transforms OBJECT
+  continual_resolving.cc
+  continual_resolving.h
   coop_to_1p.cc
   coop_to_1p.h
   efg_writer.cc
@@ -11,6 +13,8 @@ add_library (game_transforms OBJECT
   normal_form_extensive_game.h
   repeated_game.cc
   repeated_game.h
+  max_margin_gadget.cc
+  max_margin_gadget.h
   resolving_gadget.cc
   resolving_gadget.h
   subgame_utils.cc
@@ -83,3 +87,15 @@ add_executable(unsafe_subgame_test
   ${OPEN_SPIEL_OBJECTS}
   $<TARGET_OBJECTS:tests>)
 add_test(unsafe_subgame_test unsafe_subgame_test)
+
+add_executable(max_margin_gadget_test
+  max_margin_gadget_test.cc
+  ${OPEN_SPIEL_OBJECTS}
+  $<TARGET_OBJECTS:tests>)
+add_test(max_margin_gadget_test max_margin_gadget_test)
+
+add_executable(continual_resolving_test
+  continual_resolving_test.cc
+  ${OPEN_SPIEL_OBJECTS}
+  $<TARGET_OBJECTS:tests>)
+add_test(continual_resolving_test continual_resolving_test)

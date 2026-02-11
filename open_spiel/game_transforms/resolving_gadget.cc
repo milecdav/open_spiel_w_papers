@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "open_spiel/abseil-cpp/absl/strings/str_cat.h"
+#include "open_spiel/algorithms/cfr.h"
 #include "open_spiel/spiel.h"
 #include "open_spiel/spiel_globals.h"
 
@@ -423,6 +424,57 @@ std::shared_ptr<const GadgetGame> CreateGadgetGame(
   return std::make_shared<GadgetGame>(
       game, std::move(subgame_roots), resolving_player,
       std::move(counterfactual_values));
+}
+
+// =============================================================================
+// ResolveWithGadget
+// =============================================================================
+
+std::shared_ptr<TabularPolicy> ResolveWithGadget(
+    const SubgameDecomposition& decomp,
+    const TabularPolicy& trunk_policy,
+    int cfr_iterations) {
+  auto combined = std::make_shared<TabularPolicy>();
+
+  // Copy trunk
+  for (const auto& [player, info_states] : decomp.trunk_info_states) {
+    for (const auto& is : info_states) {
+      auto ap = trunk_policy.GetStatePolicy(is);
+      if (!ap.empty()) combined->SetStatePolicy(is, ap);
+    }
+  }
+
+  // Re-solve for both players
+  for (int non_res = 0; non_res < 2; ++non_res) {
+    int res = 1 - non_res;
+
+    for (const auto& [pub_obs, roots] : decomp.grouped_subgames) {
+      auto info_per_player = CollectSubgameInfoStatesPerPlayer(roots);
+      auto gadget_roots =
+          BuildSubgameRoots(roots, res, decomp.reach_probs[non_res]);
+      if (gadget_roots.empty()) continue;
+
+      auto gadget = CreateGadgetGame(
+          decomp.game, std::move(gadget_roots), res, decomp.cfvs[res]);
+      algorithms::CFRSolverBase solver(*gadget, true, true, true);
+      for (int i = 0; i < cfr_iterations; ++i) {
+        solver.EvaluateAndUpdatePolicy();
+      }
+
+      TabularPolicy gadget_policy = solver.TabularAveragePolicy();
+      const std::string prefix = "gadget_F:subgame:";
+      for (const auto& [gadget_is, ap] : gadget_policy.PolicyTable()) {
+        if (gadget_is.find(prefix) == 0) {
+          std::string orig_is = gadget_is.substr(prefix.length());
+          if (info_per_player[non_res].count(orig_is) > 0) {
+            combined->SetStatePolicy(orig_is, ap);
+          }
+        }
+      }
+    }
+  }
+
+  return combined;
 }
 
 }  // namespace open_spiel

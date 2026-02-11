@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "open_spiel/game_transforms/game_wrapper.h"
+#include "open_spiel/game_transforms/subgame_utils.h"
 #include "open_spiel/policy.h"
 #include "open_spiel/spiel.h"
 
@@ -62,13 +63,6 @@
 namespace open_spiel {
 
 class GadgetState;
-
-// Information about a root state in the subgame
-struct SubgameRoot {
-  std::unique_ptr<State> state;
-  std::string info_state_string;  // Info state of resolving player
-  double reach_prob;              // Reach prob of non-resolving player (π_{-res})
-};
 
 class GadgetGame : public WrappedGame {
  public:
@@ -187,6 +181,16 @@ std::shared_ptr<const GadgetGame> CreateGadgetGame(
     std::vector<SubgameRoot> subgame_roots,
     Player resolving_player,
     std::unordered_map<std::string, double> counterfactual_values);
+
+// Re-solve all subgames using the resolving gadget.
+// Copies trunk policy from trunk_policy, then for each player as
+// non-resolving, builds gadgets per subgame group, runs CFR, and
+// extracts the non-resolving player's strategies.
+// Returns a combined policy covering both trunk and all subgames.
+std::shared_ptr<TabularPolicy> ResolveWithGadget(
+    const SubgameDecomposition& decomp,
+    const TabularPolicy& trunk_policy,
+    int cfr_iterations = 500);
 
 }  // namespace open_spiel
 

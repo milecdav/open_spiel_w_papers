@@ -152,6 +152,62 @@ void ComputeReachProbsRecursive(
   }
 }
 
+void CollectInfoStateStringsBeforeDepthRecursive(
+    const State& state,
+    int current_depth,
+    int depth_limit,
+    std::unordered_map<int, std::unordered_set<std::string>>& result) {
+  if (state.IsTerminal()) return;
+
+  if (state.IsChanceNode()) {
+    for (const auto& [action, prob] : state.ChanceOutcomes()) {
+      auto child = state.Clone();
+      child->ApplyAction(action);
+      CollectInfoStateStringsBeforeDepthRecursive(*child, current_depth, depth_limit,
+                                      result);
+    }
+  } else {
+    if (current_depth < depth_limit) {
+      Player player = state.CurrentPlayer();
+      result[player].insert(state.InformationStateString(player));
+    }
+    for (Action action : state.LegalActions()) {
+      auto child = state.Clone();
+      child->ApplyAction(action);
+      CollectInfoStateStringsBeforeDepthRecursive(*child, current_depth + 1, depth_limit,
+                                      result);
+    }
+  }
+}
+
+void CollectInfoStateStringsBeforeRoundRecursive(
+    const State& state,
+    int current_round,
+    int target_round,
+    std::unordered_map<int, std::unordered_set<std::string>>& result) {
+  if (state.IsTerminal()) return;
+
+  if (state.IsChanceNode()) {
+    for (const auto& [action, prob] : state.ChanceOutcomes()) {
+      auto child = state.Clone();
+      child->ApplyAction(action);
+      CollectInfoStateStringsBeforeRoundRecursive(
+          *child, current_round + 1, target_round, result);
+    }
+  } else {
+    if (current_round < target_round) {
+      Player player = state.CurrentPlayer();
+      result[player].insert(state.InformationStateString(player));
+    }
+    for (Action action : state.LegalActions()) {
+      auto child = state.Clone();
+      child->ApplyAction(action);
+      CollectInfoStateStringsBeforeRoundRecursive(
+          *child, current_round, target_round, result);
+    }
+  }
+}
+
 }  // namespace
 
 std::vector<std::unique_ptr<State>> CollectStates(
@@ -176,6 +232,22 @@ std::vector<std::unique_ptr<State>> CollectStatesAtRound(
   std::vector<std::unique_ptr<State>> result;
   auto initial = game.NewInitialState();
   CollectStatesAtRoundRecursive(*initial, 0, round, result);
+  return result;
+}
+
+std::unordered_map<int, std::unordered_set<std::string>>
+CollectInfoStateStringsBeforeRound(const Game& game, int round) {
+  std::unordered_map<int, std::unordered_set<std::string>> result;
+  auto initial = game.NewInitialState();
+  CollectInfoStateStringsBeforeRoundRecursive(*initial, 0, round, result);
+  return result;
+}
+
+std::unordered_map<int, std::unordered_set<std::string>>
+CollectInfoStateStringsBeforeDepth(const Game& game, int depth_limit) {
+  std::unordered_map<int, std::unordered_set<std::string>> result;
+  auto initial = game.NewInitialState();
+  CollectInfoStateStringsBeforeDepthRecursive(*initial, 0, depth_limit, result);
   return result;
 }
 
@@ -253,6 +325,99 @@ std::unordered_map<std::string, double> ComputeReachProbabilities(
                               1.0, target_histories, result);
 
   return result;
+}
+
+std::array<std::unordered_set<std::string>, 2>
+CollectSubgameInfoStatesPerPlayer(
+    const std::vector<std::unique_ptr<State>>& roots) {
+  std::array<std::unordered_set<std::string>, 2> result;
+  std::function<void(const State&)> traverse = [&](const State& state) {
+    if (state.IsTerminal()) return;
+    if (state.IsChanceNode()) {
+      for (const auto& [action, prob] : state.ChanceOutcomes()) {
+        auto child = state.Clone();
+        child->ApplyAction(action);
+        traverse(*child);
+      }
+    } else {
+      Player p = state.CurrentPlayer();
+      result[p].insert(state.InformationStateString(p));
+      for (Action action : state.LegalActions()) {
+        auto child = state.Clone();
+        child->ApplyAction(action);
+        traverse(*child);
+      }
+    }
+  };
+  for (const auto& root : roots) traverse(*root);
+  return result;
+}
+
+std::vector<SubgameRoot> BuildSubgameRoots(
+    const std::vector<std::unique_ptr<State>>& states,
+    Player resolving_player,
+    const std::unordered_map<std::string, double>& reach_probs) {
+  std::vector<SubgameRoot> roots;
+  for (const auto& state : states) {
+    std::string hist = state->HistoryString();
+    auto it = reach_probs.find(hist);
+    if (it == reach_probs.end() || it->second <= 0) continue;
+
+    SubgameRoot root;
+    root.state = state->Clone();
+    root.info_state_string = state->InformationStateString(resolving_player);
+    root.reach_prob = it->second;
+    roots.push_back(std::move(root));
+  }
+  return roots;
+}
+
+SubgameDecomposition DecomposeGameAtRound(
+    std::shared_ptr<const Game> game,
+    const Policy& policy,
+    int round) {
+  SubgameDecomposition decomp;
+  decomp.game = game;
+  decomp.trunk_info_states = CollectInfoStateStringsBeforeRound(*game, round);
+
+  auto roots = CollectStatesAtRound(*game, round);
+  std::vector<const State*> ptrs;
+  for (const auto& s : roots) ptrs.push_back(s.get());
+
+  decomp.reach_probs[0] = ComputeReachProbabilities(*game, policy, 0, ptrs);
+  decomp.reach_probs[1] = ComputeReachProbabilities(*game, policy, 1, ptrs);
+  decomp.cfvs[0] = ComputeCounterfactualValuesAtStates(
+      *game, policy, 0, ptrs, decomp.reach_probs[1]);
+  decomp.cfvs[1] = ComputeCounterfactualValuesAtStates(
+      *game, policy, 1, ptrs, decomp.reach_probs[0]);
+
+  decomp.grouped_subgames =
+      GroupStatesByPublicObservation(*game, std::move(roots));
+  return decomp;
+}
+
+SubgameDecomposition DecomposeGameAtDepth(
+    std::shared_ptr<const Game> game,
+    const Policy& policy,
+    int depth) {
+  SubgameDecomposition decomp;
+  decomp.game = game;
+  decomp.trunk_info_states = CollectInfoStateStringsBeforeDepth(*game, depth);
+
+  auto roots = CollectStatesAtDepth(*game, depth);
+  std::vector<const State*> ptrs;
+  for (const auto& s : roots) ptrs.push_back(s.get());
+
+  decomp.reach_probs[0] = ComputeReachProbabilities(*game, policy, 0, ptrs);
+  decomp.reach_probs[1] = ComputeReachProbabilities(*game, policy, 1, ptrs);
+  decomp.cfvs[0] = ComputeCounterfactualValuesAtStates(
+      *game, policy, 0, ptrs, decomp.reach_probs[1]);
+  decomp.cfvs[1] = ComputeCounterfactualValuesAtStates(
+      *game, policy, 1, ptrs, decomp.reach_probs[0]);
+
+  decomp.grouped_subgames =
+      GroupStatesByPublicObservation(*game, std::move(roots));
+  return decomp;
 }
 
 }  // namespace open_spiel

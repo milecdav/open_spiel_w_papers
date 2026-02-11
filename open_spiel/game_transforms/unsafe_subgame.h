@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "open_spiel/game_transforms/game_wrapper.h"
+#include "open_spiel/game_transforms/subgame_utils.h"
 #include "open_spiel/spiel.h"
 
 // This transformation wraps a set of subgame roots with a chance node at the
@@ -105,6 +106,14 @@ std::shared_ptr<const UnsafeSubgameGame> CreateUnsafeSubgame(
     std::shared_ptr<const Game> game,
     std::vector<std::unique_ptr<State>> roots,
     std::vector<double> reach_probs);
+
+// Re-solve all subgames using unsafe (no gadget) re-solving.
+// Same interface as ResolveWithGadget but uses direct subgame solving
+// weighted by total reach (reach_p0 * reach_p1).
+std::shared_ptr<TabularPolicy> ResolveWithUnsafeSubgame(
+    const SubgameDecomposition& decomp,
+    const TabularPolicy& trunk_policy,
+    int cfr_iterations = 500);
 
 }  // namespace open_spiel
 

@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "open_spiel/abseil-cpp/absl/strings/str_cat.h"
+#include "open_spiel/algorithms/cfr.h"
 #include "open_spiel/spiel.h"
 #include "open_spiel/spiel_utils.h"
 
@@ -176,6 +177,65 @@ std::shared_ptr<const UnsafeSubgameGame> CreateUnsafeSubgame(
     std::vector<double> reach_probs) {
   return std::make_shared<UnsafeSubgameGame>(
       game, std::move(roots), std::move(reach_probs));
+}
+
+// =============================================================================
+// ResolveWithUnsafeSubgame
+// =============================================================================
+
+std::shared_ptr<TabularPolicy> ResolveWithUnsafeSubgame(
+    const SubgameDecomposition& decomp,
+    const TabularPolicy& trunk_policy,
+    int cfr_iterations) {
+  auto combined = std::make_shared<TabularPolicy>();
+
+  // Copy trunk
+  for (const auto& [player, info_states] : decomp.trunk_info_states) {
+    for (const auto& is : info_states) {
+      auto ap = trunk_policy.GetStatePolicy(is);
+      if (!ap.empty()) combined->SetStatePolicy(is, ap);
+    }
+  }
+
+  // Solve each subgame
+  for (const auto& [pub_obs, roots] : decomp.grouped_subgames) {
+    std::vector<std::unique_ptr<State>> subgame_roots;
+    std::vector<double> total_reaches;
+
+    for (const auto& root : roots) {
+      std::string hist = root->HistoryString();
+      double reach_p0 = 0.0, reach_p1 = 0.0;
+      auto it0 = decomp.reach_probs[0].find(hist);
+      if (it0 != decomp.reach_probs[0].end()) reach_p0 = it0->second;
+      auto it1 = decomp.reach_probs[1].find(hist);
+      if (it1 != decomp.reach_probs[1].end()) reach_p1 = it1->second;
+      double total_reach = reach_p0 * reach_p1;
+      if (total_reach > 0) {
+        subgame_roots.push_back(root->Clone());
+        total_reaches.push_back(total_reach);
+      }
+    }
+
+    if (subgame_roots.empty()) continue;
+
+    auto unsafe = CreateUnsafeSubgame(
+        decomp.game, std::move(subgame_roots), std::move(total_reaches));
+    algorithms::CFRSolverBase solver(*unsafe, true, true, true);
+    for (int i = 0; i < cfr_iterations; ++i) {
+      solver.EvaluateAndUpdatePolicy();
+    }
+
+    TabularPolicy policy = solver.TabularAveragePolicy();
+    const std::string prefix = "unsafe:subgame:";
+    for (const auto& [subgame_is, ap] : policy.PolicyTable()) {
+      if (subgame_is.find(prefix) == 0) {
+        std::string orig_is = subgame_is.substr(prefix.length());
+        combined->SetStatePolicy(orig_is, ap);
+      }
+    }
+  }
+
+  return combined;
 }
 
 }  // namespace open_spiel

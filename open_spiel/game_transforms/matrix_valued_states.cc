@@ -950,12 +950,14 @@ std::string MVSStateWithSubtreePureStrategies::InformationStateString(
   switch (phase_) {
     case Phase::kNormal:
       if (AtDepthLimit()) {
-        return absl::StrCat(base, ":MVSP_SELECT");
+        // P0 selects first at depth limit (same as kPortfolioP1)
+        return absl::StrCat(base, ":MVSP_SEL0");
       }
       return base;
     case Phase::kPortfolioP1:
+      return absl::StrCat(base, ":MVSP_SEL0");
     case Phase::kPortfolioP2:
-      return absl::StrCat(base, ":MVSP_SELECT");
+      return absl::StrCat(base, ":MVSP_SEL1");
     case Phase::kMatrixTerminal:
       if (player == 0) {
         return absl::StrCat(base, ":MVSP:", p1_choice_);

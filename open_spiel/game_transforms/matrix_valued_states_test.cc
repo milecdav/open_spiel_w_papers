@@ -20,7 +20,8 @@
 #include <string>
 #include <vector>
 
-#include "open_spiel/abseil-cpp/absl/strings/str_cat.h"
+#include "open_spiel/game_transforms/subgame_utils.h"
+#include "open_spiel/game_transforms/turn_based_simultaneous_game.h"
 #include "open_spiel/algorithms/best_response.h"
 #include "open_spiel/algorithms/cfr.h"
 #include "open_spiel/algorithms/expected_returns.h"
@@ -32,82 +33,6 @@
 
 namespace open_spiel {
 namespace {
-
-// A policy that combines two policies: uses `locked_policy` for info states
-// that are in the locked set, and `fallback_policy` for all others.
-class CombinedPolicy : public Policy {
- public:
-  CombinedPolicy(std::shared_ptr<Policy> locked_policy,
-                 std::shared_ptr<Policy> fallback_policy,
-                 std::set<std::string> locked_infostates)
-      : locked_policy_(std::move(locked_policy)),
-        fallback_policy_(std::move(fallback_policy)),
-        locked_infostates_(std::move(locked_infostates)) {}
-
-  ActionsAndProbs GetStatePolicy(const State& state,
-                                  Player player) const override {
-    std::string info_state = state.InformationStateString(player);
-    if (locked_infostates_.count(info_state) > 0) {
-      // Use locked policy for this info state
-      return locked_policy_->GetStatePolicy(info_state);
-    }
-    // Use fallback policy - call with State to support UniformPolicy
-    return fallback_policy_->GetStatePolicy(state, player);
-  }
-
-  ActionsAndProbs GetStatePolicy(const std::string& info_state) const override {
-    if (locked_infostates_.count(info_state) > 0) {
-      return locked_policy_->GetStatePolicy(info_state);
-    }
-    // Can't call fallback with just info_state if it doesn't support it
-    // This will fail for UniformPolicy, but that's ok - we use the State version
-    return fallback_policy_->GetStatePolicy(info_state);
-  }
-
- private:
-  std::shared_ptr<Policy> locked_policy_;
-  std::shared_ptr<Policy> fallback_policy_;
-  std::set<std::string> locked_infostates_;
-};
-
-// Collect all info states from a game up to a certain round (for Leduc-like games)
-// Returns a set of info state strings that appear before round 2 (before public card).
-std::unordered_map<int, std::unordered_set<std::string>> CollectRound1InfoStates(const Game& game) {
-  std::unordered_map<int, std::unordered_set<std::string>> round1_infostates;
-
-  std::function<void(const State&, int)> traverse = [&](const State& state,
-                                                         int chance_count) {
-    if (state.IsTerminal()) return;
-
-    // In Leduc, round 2 starts after 3 chance nodes (2 private + 1 public)
-    // So we collect info states while chance_count < 3
-    if (state.IsChanceNode()) {
-      for (const auto& [action, prob] : state.ChanceOutcomes()) {
-        auto next = state.Clone();
-        next->ApplyAction(action);
-        traverse(*next, chance_count + 1);
-      }
-    } else {
-      // This is a player node
-      if (chance_count < 3) {
-        // We're in round 1 (before public card)
-        Player player = state.CurrentPlayer();
-        if(round1_infostates.find(player) == round1_infostates.end()) {
-          round1_infostates[player] = std::unordered_set<std::string>();
-        }
-        round1_infostates[player].insert(state.InformationStateString(player));
-      }
-      for (Action action : state.LegalActions()) {
-        auto next = state.Clone();
-        next->ApplyAction(action);
-        traverse(*next, chance_count);
-      }
-    }
-  };
-
-  traverse(*game.NewInitialState(), 0);
-  return round1_infostates;
-}
 
 // Test basic construction of MVS game from Kuhn poker
 void TestBasicConstruction() {
@@ -1026,43 +951,6 @@ void TestMVSSubtreePureStrategiesLeducCFRValue() {
   std::cout << "TestMVSSubtreePureStrategiesLeducCFRValue passed!" << std::endl;
 }
 
-// A policy that combines a locked policy for certain info states with
-// CFR's current policy for other states. This is used with policy_overrides
-// to fix part of the strategy during CFR solving.
-class LockedCFRPolicy : public Policy {
- public:
-  LockedCFRPolicy(std::shared_ptr<Policy> locked_policy,
-                  const algorithms::CFRInfoStateValuesTable& cfr_info_states,
-                  const std::set<std::string>& locked_infostates)
-      : locked_policy_(std::move(locked_policy)),
-        cfr_info_states_(cfr_info_states),
-        locked_infostates_(locked_infostates) {}
-
-  ActionsAndProbs GetStatePolicy(const State& state,
-                                  Player player) const override {
-    std::string info_state = state.InformationStateString(player);
-    return GetStatePolicy(info_state);
-  }
-
-  ActionsAndProbs GetStatePolicy(const std::string& info_state) const override {
-    // If this is a locked info state, return the locked policy
-    if (locked_infostates_.count(info_state) > 0) {
-      return locked_policy_->GetStatePolicy(info_state);
-    }
-    // Otherwise, return CFR's current policy
-    auto it = cfr_info_states_.find(info_state);
-    if (it == cfr_info_states_.end()) {
-      return {};  // Unknown state
-    }
-    return it->second.GetCurrentPolicy();
-  }
-
- private:
-  std::shared_ptr<Policy> locked_policy_;
-  const algorithms::CFRInfoStateValuesTable& cfr_info_states_;
-  const std::set<std::string>& locked_infostates_;
-};
-
 std::unordered_map<std::string, double> DepthLimitedExploitability(const Game& game, std::shared_ptr<Policy> policy, std::unordered_map<int, std::unordered_set<std::string>> depth_limited_infostates) {
   std::unordered_map<std::string, double> exploitability_table;
 
@@ -1127,7 +1015,8 @@ void TestMVSStrategyInOriginalGame() {
             << std::endl;
 
   // Collect round-1 info states from the original game
-  auto round1_infostates = CollectRound1InfoStates(*game);
+  // Leduc: round 1 is before 3 chance nodes (2 private + 1 public card)
+  auto round1_infostates = CollectInfoStateStringsBeforeRound(*game, 3);
   std::cout << "Round 1 info states in original game: "
             << round1_infostates.size() << std::endl;
 
@@ -1201,6 +1090,191 @@ void TestMVSStrategyInOriginalGame() {
   std::cout << "TestMVSStrategyInOriginalGame passed!" << std::endl;
 }
 
+// Test MVS with subtree pure strategies on II goofspiel(4), descending cards.
+// Uses action-based depth limit = 4 (two full bidding rounds in the trunk).
+void TestMVSSubtreePureStrategiesGoofspiel() {
+  std::cout << "TestMVSSubtreePureStrategiesGoofspiel" << std::endl;
+
+  auto game = LoadGameAsTurnBased(
+      "goofspiel",
+      {{"num_cards", GameParameter(4)},
+       {"imp_info", GameParameter(true)},
+       {"points_order", GameParameter(std::string("descending"))}});
+
+  // Create MVS game with subtree pure strategies, action-based depth limit = 4
+  auto mvs_game = CreateMVSGameWithSubtreePureStrategies(
+      game, /*depth_limit=*/4, MVSGame::DepthMode::kActionBased);
+
+  std::cout << "  MVS game created" << std::endl;
+
+  // Random simulations to verify structural correctness
+  std::mt19937 rng(42);
+  for (int sim = 0; sim < 20; ++sim) {
+    auto state = mvs_game->NewInitialState();
+    while (!state->IsTerminal()) {
+      if (state->IsChanceNode()) {
+        auto outcomes = state->ChanceOutcomes();
+        std::vector<double> probs;
+        for (const auto& [action, prob] : outcomes) {
+          probs.push_back(prob);
+        }
+        std::discrete_distribution<int> dist(probs.begin(), probs.end());
+        int idx = dist(rng);
+        state->ApplyAction(outcomes[idx].first);
+      } else {
+        auto actions = state->LegalActions();
+        std::uniform_int_distribution<int> dist(0, actions.size() - 1);
+        state->ApplyAction(actions[dist(rng)]);
+      }
+    }
+    auto returns = state->Returns();
+    SPIEL_CHECK_FLOAT_EQ(returns[0] + returns[1], 0.0);
+  }
+  std::cout << "  Random simulations passed (zero-sum verified)" << std::endl;
+
+  // Solve MVS game with CFR
+  algorithms::CFRSolverBase mvs_solver(*mvs_game,
+                                        /*alternating_updates=*/true,
+                                        /*linear_averaging=*/true,
+                                        /*regret_matching_plus=*/true);
+
+  for (int i = 0; i < 500; ++i) {
+    mvs_solver.EvaluateAndUpdatePolicy();
+  }
+
+  auto mvs_policy = mvs_solver.AveragePolicy();
+  double mvs_exploitability =
+      algorithms::Exploitability(*mvs_game, *mvs_policy);
+  std::cout << "  MVS game exploitability: " << mvs_exploitability << std::endl;
+
+  // Solve original game with CFR for comparison
+  algorithms::CFRSolverBase orig_solver(*game,
+                                         /*alternating_updates=*/true,
+                                         /*linear_averaging=*/true,
+                                         /*regret_matching_plus=*/true);
+
+  for (int i = 0; i < 500; ++i) {
+    orig_solver.EvaluateAndUpdatePolicy();
+  }
+
+  auto orig_policy = orig_solver.AveragePolicy();
+  double orig_exploitability =
+      algorithms::Exploitability(*game, *orig_policy);
+  std::cout << "  Full game exploitability: " << orig_exploitability
+            << std::endl;
+
+  // MVS exploitability should be in the same ballpark as the full game
+  double tolerance = 0.05;
+  SPIEL_CHECK_LT(std::abs(mvs_exploitability - orig_exploitability), tolerance);
+
+  std::cout << "TestMVSSubtreePureStrategiesGoofspiel passed!" << std::endl;
+}
+
+// Verify MVS trunk strategy on II goofspiel(4) by locking trunk info states
+// during CFR solving on the original game. Analogous to
+// TestMVSStrategyInOriginalGame but for goofspiel with action-based depth.
+void TestMVSGoofspielStrategyInOriginalGame() {
+  std::cout << "TestMVSGoofspielStrategyInOriginalGame" << std::endl;
+
+  auto game = LoadGameAsTurnBased(
+      "goofspiel",
+      {{"num_cards", GameParameter(4)},
+       {"imp_info", GameParameter(true)},
+       {"points_order", GameParameter(std::string("descending"))}});
+
+  const int depth_limit = 4;
+
+  // Step 1: Solve MVS game
+  std::cout << "  Running CFR on MVS game..." << std::endl;
+  auto mvs_game = CreateMVSGameWithSubtreePureStrategies(
+      game, depth_limit, MVSGame::DepthMode::kActionBased);
+
+  algorithms::CFRSolverBase mvs_solver(*mvs_game,
+                                        /*alternating_updates=*/true,
+                                        /*linear_averaging=*/true,
+                                        /*regret_matching_plus=*/true);
+
+  for (int i = 0; i < 500; ++i) {
+    mvs_solver.EvaluateAndUpdatePolicy();
+  }
+  auto mvs_avg_policy = mvs_solver.AveragePolicy();
+
+  auto mvs_value = algorithms::ExpectedReturns(
+      *mvs_game->NewInitialState(), *mvs_avg_policy, -1, true);
+  std::cout << "  MVS game value: [" << mvs_value[0] << ", " << mvs_value[1]
+            << "]" << std::endl;
+
+  // Step 2: Collect trunk info states (action depth < depth_limit)
+  auto trunk_infostates =
+      CollectInfoStateStringsBeforeDepth(*game, depth_limit);
+  int total_trunk = 0;
+  for (const auto& [player, info_states] : trunk_infostates) {
+    std::cout << "  Player " << player << " trunk info states: "
+              << info_states.size() << std::endl;
+    total_trunk += info_states.size();
+  }
+  std::cout << "  Total trunk info states: " << total_trunk << std::endl;
+
+  // Step 3: Extract MVS policy for trunk states
+  auto mvs_trunk_policy = std::make_shared<TabularPolicy>();
+  int matched_states = 0;
+  for (const auto& [player, info_states] : trunk_infostates) {
+    for (const auto& info_state : info_states) {
+      auto actions_probs = mvs_avg_policy->GetStatePolicy(info_state);
+      if (!actions_probs.empty()) {
+        mvs_trunk_policy->SetStatePolicy(info_state, actions_probs);
+        matched_states++;
+      }
+    }
+  }
+  std::cout << "  Matched info states from MVS policy: " << matched_states
+            << std::endl;
+
+  // Step 4: Lock trunk, solve rest with CFR, compute exploitability
+  auto mvs_exploitability_table =
+      DepthLimitedExploitability(*game, mvs_trunk_policy, trunk_infostates);
+
+  std::cout << "  MVS trunk exploitability: "
+            << mvs_exploitability_table["Total exploitability"] << std::endl;
+
+  // Step 5: Solve original game with CFR for comparison
+  std::cout << "  Running standard CFR on original game..." << std::endl;
+  algorithms::CFRSolverBase orig_solver(*game,
+                                         /*alternating_updates=*/true,
+                                         /*linear_averaging=*/true,
+                                         /*regret_matching_plus=*/true);
+
+  for (int i = 0; i < 500; ++i) {
+    orig_solver.EvaluateAndUpdatePolicy();
+  }
+  auto orig_avg_policy = orig_solver.AveragePolicy();
+
+  auto orig_trunk_policy = std::make_shared<TabularPolicy>();
+  for (const auto& [player, info_states] : trunk_infostates) {
+    for (const auto& info_state : info_states) {
+      auto actions_probs = orig_avg_policy->GetStatePolicy(info_state);
+      if (!actions_probs.empty()) {
+        orig_trunk_policy->SetStatePolicy(info_state, actions_probs);
+      }
+    }
+  }
+
+  auto orig_exploitability_table =
+      DepthLimitedExploitability(*game, orig_trunk_policy, trunk_infostates);
+
+  std::cout << "  Original trunk exploitability: "
+            << orig_exploitability_table["Total exploitability"] << std::endl;
+
+  // The MVS trunk strategy should produce similar exploitability
+  double tolerance = 0.1;
+  SPIEL_CHECK_LT(
+      std::abs(mvs_exploitability_table["Total exploitability"] -
+               orig_exploitability_table["Total exploitability"]),
+      tolerance);
+
+  std::cout << "TestMVSGoofspielStrategyInOriginalGame passed!" << std::endl;
+}
+
 }  // namespace
 }  // namespace open_spiel
 
@@ -1211,6 +1285,7 @@ int main(int argc, char** argv) {
   bool leduc_structure_only = false;
   bool leduc_cfr_only = false;
   bool leduc_verify_only = false;
+  bool goofspiel_only = false;
   for (int i = 1; i < argc; ++i) {
     std::string arg = argv[i];
     if (arg == "--leduc_structure") {
@@ -1219,6 +1294,8 @@ int main(int argc, char** argv) {
       leduc_cfr_only = true;
     } else if (arg == "--leduc_verify") {
       leduc_verify_only = true;
+    } else if (arg == "--goofspiel") {
+      goofspiel_only = true;
     }
   }
 
@@ -1237,6 +1314,13 @@ int main(int argc, char** argv) {
   if (leduc_verify_only) {
     std::cout << "Running only Leduc strategy verification test..." << std::endl;
     open_spiel::TestMVSStrategyInOriginalGame();
+    return 0;
+  }
+
+  if (goofspiel_only) {
+    std::cout << "Running only Goofspiel MVS tests..." << std::endl;
+    open_spiel::TestMVSSubtreePureStrategiesGoofspiel();
+    open_spiel::TestMVSGoofspielStrategyInOriginalGame();
     return 0;
   }
 
@@ -1264,6 +1348,10 @@ int main(int argc, char** argv) {
   open_spiel::TestMVSSubtreePureStrategiesLeducStructure();
   open_spiel::TestMVSSubtreePureStrategiesLeducCFRValue();
   open_spiel::TestMVSStrategyInOriginalGame();
+
+  // Goofspiel tests with subtree pure strategies
+  open_spiel::TestMVSSubtreePureStrategiesGoofspiel();
+  open_spiel::TestMVSGoofspielStrategyInOriginalGame();
 
   std::cout << "\nAll tests passed!" << std::endl;
   return 0;
