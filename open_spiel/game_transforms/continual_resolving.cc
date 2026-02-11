@@ -127,6 +127,133 @@ ActionsAndProbs GadgetPolicyWrapper::GetStatePolicy(
 }
 
 // ============================================================================
+// MVSOpponentPolicy
+// ============================================================================
+
+MVSOpponentPolicy::MVSOpponentPolicy(
+    const Policy* underlying,
+    std::unordered_map<std::string, ActionsAndProbs> portfolio_probs)
+    : underlying_(underlying),
+      portfolio_probs_(std::move(portfolio_probs)) {}
+
+ActionsAndProbs MVSOpponentPolicy::GetStatePolicy(
+    const std::string& info_state) const {
+  // Check for MVS portfolio info states first
+  auto it = portfolio_probs_.find(info_state);
+  if (it != portfolio_probs_.end()) {
+    return it->second;
+  }
+  // Delegate to underlying model for regular info states
+  return underlying_->GetStatePolicy(info_state);
+}
+
+ActionsAndProbs MVSOpponentPolicy::GetStatePolicy(
+    const State& state, Player player) const {
+  std::string info_state = state.InformationStateString(player);
+  auto result = GetStatePolicy(info_state);
+  if (!result.empty()) return result;
+  // Fall back to uniform
+  auto legal = state.LegalActions(player);
+  if (legal.empty()) return {};
+  double prob = 1.0 / legal.size();
+  for (Action a : legal) {
+    result.push_back({a, prob});
+  }
+  return result;
+}
+
+// ============================================================================
+// PrecomputeMVSPortfolioDistributions
+// ============================================================================
+
+std::unordered_map<std::string, ActionsAndProbs>
+PrecomputeMVSPortfolioDistributions(
+    const MVSGameWithSubtreePureStrategies& mvs_game,
+    const Policy& opponent_model,
+    Player opponent) {
+  std::unordered_map<std::string, ActionsAndProbs> result;
+
+  // Determine which portfolio phase corresponds to the opponent
+  // P0 selects at kPortfolioP1, P1 selects at kPortfolioP2
+  auto opponent_phase = (opponent == 0)
+      ? MVSState::Phase::kPortfolioP1
+      : MVSState::Phase::kPortfolioP2;
+
+  std::function<void(const State&)> traverse = [&](const State& state) {
+    if (state.IsTerminal()) return;
+
+    auto* mvs_state =
+        dynamic_cast<const MVSStateWithSubtreePureStrategies*>(&state);
+    if (!mvs_state) return;
+
+    // At the opponent's portfolio choice, compute model's distribution
+    if (mvs_state->GetPhase() == opponent_phase) {
+      std::string info_state = state.InformationStateString(opponent);
+      // Only compute once per unique info state
+      if (result.count(info_state) > 0) return;
+
+      // Get the opponent's portfolio (pure strategies)
+      const auto& portfolio = (opponent == 0)
+          ? mvs_state->GetPortfolioP0()
+          : mvs_state->GetPortfolioP1();
+
+      // Get subtree info states for the opponent
+      SubtreeInfostates subtree_is =
+          CollectSubtreeInfostates(mvs_state->GetUnderlyingState(), opponent);
+
+      // Compute probability of each pure strategy under the model
+      ActionsAndProbs dist;
+      for (int k = 0; k < static_cast<int>(portfolio.size()); ++k) {
+        double prob = 1.0;
+        for (const auto& is : subtree_is.infostates) {
+          auto pure_ap = portfolio[k]->GetStatePolicy(is);
+          if (pure_ap.empty()) continue;
+          // Find the action this pure strategy plays at this info state
+          Action chosen = pure_ap[0].first;  // Pure strategy: first (only) entry
+          // Get model's probability for this action
+          auto model_ap = opponent_model.GetStatePolicy(is);
+          prob *= GetProb(model_ap, chosen);
+        }
+        dist.push_back({k, prob});
+      }
+      result[info_state] = dist;
+      return;  // Don't traverse deeper into MVS phases
+    }
+
+    // At matrix terminal, stop
+    if (mvs_state->GetPhase() == MVSState::Phase::kMatrixTerminal) return;
+
+    // At other portfolio phase (target player's), traverse all actions
+    if (mvs_state->GetPhase() != MVSState::Phase::kNormal) {
+      for (Action a : state.LegalActions()) {
+        auto child = state.Clone();
+        child->ApplyAction(a);
+        traverse(*child);
+      }
+      return;
+    }
+
+    // Normal phase: traverse game tree
+    if (state.IsChanceNode()) {
+      for (const auto& [a, p] : state.ChanceOutcomes()) {
+        auto child = state.Clone();
+        child->ApplyAction(a);
+        traverse(*child);
+      }
+    } else {
+      for (Action a : state.LegalActions()) {
+        auto child = state.Clone();
+        child->ApplyAction(a);
+        traverse(*child);
+      }
+    }
+  };
+
+  traverse(*mvs_game.NewInitialState());
+  return result;
+}
+
+// ============================================================================
 // ResolveSubgames
 // ============================================================================
 
@@ -230,31 +357,8 @@ std::shared_ptr<TabularPolicy> ResolveSubgames(
     for (const auto& [pub_obs, roots] : decomp.grouped_subgames) {
       auto info_per_player = CollectSubgameInfoStatesPerPlayer(roots);
 
-      std::shared_ptr<const Game> subgame_game;
-      std::string prefix;
-      int follow_action = -1;
-      int num_choice_actions = 0;
-
-      if (config.gadget == GadgetType::kResolving) {
-        int res = opponent;
-        auto gadget_roots =
-            BuildSubgameRoots(roots, res, decomp.reach_probs[target]);
-        if (gadget_roots.empty()) continue;
-        subgame_game = CreateGadgetGame(
-            decomp.game, std::move(gadget_roots), res, decomp.cfvs[res]);
-        prefix = "gadget_F:subgame:";
-        follow_action = GadgetGame::kFollowAction;
-      } else if (config.gadget == GadgetType::kMaxMargin) {
-        int res = opponent;
-        auto gadget_roots =
-            BuildSubgameRoots(roots, res, decomp.reach_probs[target]);
-        if (gadget_roots.empty()) continue;
-        auto mm_game = CreateMaxMarginGadgetGame(
-            decomp.game, std::move(gadget_roots), res, decomp.cfvs[res]);
-        num_choice_actions = mm_game->NumInfoSets();
-        subgame_game = mm_game;
-        prefix = "mm_F:subgame:";
-      } else {  // kNone
+      if (config.gadget == GadgetType::kNone) {
+        // Unsafe subgame: no T/F choice, extract both players' strategies.
         std::vector<std::unique_ptr<State>> subgame_roots;
         std::vector<double> total_reaches;
         for (const auto& root : roots) {
@@ -271,37 +375,117 @@ std::shared_ptr<TabularPolicy> ResolveSubgames(
           }
         }
         if (subgame_roots.empty()) continue;
-        subgame_game = CreateUnsafeSubgame(
+        auto subgame_game = CreateUnsafeSubgame(
             decomp.game, std::move(subgame_roots), std::move(total_reaches));
-        prefix = "unsafe:subgame:";
-      }
+        std::string prefix = "unsafe:subgame:";
 
-      // Create wrapper for opponent model
-      GadgetPolicyWrapper wrapper(config.opponent_model, prefix,
-                                  follow_action, num_choice_actions);
+        GadgetPolicyWrapper wrapper(config.opponent_model, prefix, -1, 0);
+        algorithms::RNRSolver solver(*subgame_game, target, &wrapper, config.p,
+                                     true, true, true);
+        for (int i = 0; i < config.cfr_iterations; ++i) {
+          solver.EvaluateAndUpdatePolicy();
+        }
 
-      // Solve with RNR
-      algorithms::RNRSolver solver(*subgame_game, target, &wrapper, config.p,
-                                   true, true, true);
-      for (int i = 0; i < config.cfr_iterations; ++i) {
-        solver.EvaluateAndUpdatePolicy();
-      }
-
-      // Extract target player's strategy
-      TabularPolicy policy = solver.TabularAveragePolicy();
-      for (const auto& [sub_is, ap] : policy.PolicyTable()) {
-        if (sub_is.compare(0, prefix.length(), prefix) == 0) {
-          std::string orig = sub_is.substr(prefix.length());
-          if (info_per_player[target].count(orig) > 0) {
-            combined->SetStatePolicy(orig, ap);
+        TabularPolicy policy = solver.TabularAveragePolicy();
+        for (const auto& [sub_is, ap] : policy.PolicyTable()) {
+          if (sub_is.compare(0, prefix.length(), prefix) == 0) {
+            std::string orig = sub_is.substr(prefix.length());
+            if (info_per_player[target].count(orig) > 0 ||
+                info_per_player[opponent].count(orig) > 0) {
+              combined->SetStatePolicy(orig, ap);
+            }
           }
         }
-      }
+      } else {
+        // Gadget cases (kResolving or kMaxMargin).
+        // The resolving player has artificial T/F (or info-set choice) actions
+        // that distort their subgame strategy. So we must use two gadgets:
+        //   1. Gadget with res=opponent: solve with RNR → extract target's
+        //      strategy (target is non-resolving, strategy is undistorted)
+        //   2. Gadget with res=target: solve with CFR → extract opponent's
+        //      strategy (opponent is non-resolving, strategy is undistorted)
 
-      // Copy opponent's strategy from model
-      for (const auto& is : info_per_player[opponent]) {
-        auto ap = config.opponent_model->GetStatePolicy(is);
-        if (!ap.empty()) combined->SetStatePolicy(is, ap);
+        // --- Gadget 1: target player's strategy via RNR ---
+        {
+          int res = opponent;
+          auto gadget_roots =
+              BuildSubgameRoots(roots, res, decomp.reach_probs[target]);
+          if (gadget_roots.empty()) continue;
+
+          std::shared_ptr<const Game> gadget_game;
+          std::string prefix;
+          int follow_action = -1;
+          int num_choice_actions = 0;
+
+          if (config.gadget == GadgetType::kResolving) {
+            gadget_game = CreateGadgetGame(
+                decomp.game, std::move(gadget_roots), res, decomp.cfvs[res]);
+            prefix = "gadget_F:subgame:";
+            follow_action = GadgetGame::kFollowAction;
+          } else {  // kMaxMargin
+            auto mm_game = CreateMaxMarginGadgetGame(
+                decomp.game, std::move(gadget_roots), res, decomp.cfvs[res]);
+            num_choice_actions = mm_game->NumInfoSets();
+            gadget_game = mm_game;
+            prefix = "mm_F:subgame:";
+          }
+
+          GadgetPolicyWrapper wrapper(config.opponent_model, prefix,
+                                      follow_action, num_choice_actions);
+          algorithms::RNRSolver solver(*gadget_game, target, &wrapper, config.p,
+                                       true, true, true);
+          for (int i = 0; i < config.cfr_iterations; ++i) {
+            solver.EvaluateAndUpdatePolicy();
+          }
+
+          // Extract only target player's strategy (non-resolving).
+          TabularPolicy policy = solver.TabularAveragePolicy();
+          for (const auto& [sub_is, ap] : policy.PolicyTable()) {
+            if (sub_is.compare(0, prefix.length(), prefix) == 0) {
+              std::string orig = sub_is.substr(prefix.length());
+              if (info_per_player[target].count(orig) > 0) {
+                combined->SetStatePolicy(orig, ap);
+              }
+            }
+          }
+        }
+
+        // --- Gadget 2: opponent's strategy via CFR ---
+        {
+          int res = target;
+          auto gadget_roots =
+              BuildSubgameRoots(roots, res, decomp.reach_probs[opponent]);
+          if (gadget_roots.empty()) continue;
+
+          std::shared_ptr<const Game> gadget_game;
+          std::string prefix;
+
+          if (config.gadget == GadgetType::kResolving) {
+            gadget_game = CreateGadgetGame(
+                decomp.game, std::move(gadget_roots), res, decomp.cfvs[res]);
+            prefix = "gadget_F:subgame:";
+          } else {  // kMaxMargin
+            gadget_game = CreateMaxMarginGadgetGame(
+                decomp.game, std::move(gadget_roots), res, decomp.cfvs[res]);
+            prefix = "mm_F:subgame:";
+          }
+
+          algorithms::CFRSolverBase cfr_solver(*gadget_game, true, true, true);
+          for (int i = 0; i < config.cfr_iterations; ++i) {
+            cfr_solver.EvaluateAndUpdatePolicy();
+          }
+
+          // Extract only opponent's strategy (non-resolving).
+          TabularPolicy policy = cfr_solver.TabularAveragePolicy();
+          for (const auto& [sub_is, ap] : policy.PolicyTable()) {
+            if (sub_is.compare(0, prefix.length(), prefix) == 0) {
+              std::string orig = sub_is.substr(prefix.length());
+              if (info_per_player[opponent].count(orig) > 0) {
+                combined->SetStatePolicy(orig, ap);
+              }
+            }
+          }
+        }
       }
     }
   }
@@ -325,22 +509,23 @@ std::shared_ptr<TabularPolicy> ContinualResolve(
   // Step 1: Create and solve MVS trunk
   auto mvs_game = CreateMVSGameWithSubtreePureStrategies(
       game, depth, depth_mode);
-  algorithms::CFRSolverBase trunk_solver(*mvs_game, true, true, true);
 
-  // Fix opponent's strategy in trunk when we have an opponent model
   auto trunk_is = (depth_mode == MVSGame::DepthMode::kRoundBased)
       ? CollectInfoStateStringsBeforeRound(*game, depth)
       : CollectInfoStateStringsBeforeDepth(*game, depth);
   int opponent = 1 - config.target_player;
-  auto it = trunk_is.find(opponent);
-  if (it != trunk_is.end() && !it->second.empty()) {
-    auto opp_policy = std::make_shared<TabularPolicy>();
-    for (const auto& is : it->second) {
-      auto ap = opponent_tabular.GetStatePolicy(is);
-      if (!ap.empty()) opp_policy->SetStatePolicy(is, ap);
-    }
-    trunk_solver.SetFixedPolicy(opp_policy, it->second);
-  }
+
+  // Use RNR for the trunk to respect the p parameter.
+  // The MVSOpponentPolicy handles both regular info states (delegating
+  // to the opponent model) and MVS portfolio choice info states (providing
+  // the model's distribution over pure strategies).
+  auto portfolio_dists = PrecomputeMVSPortfolioDistributions(
+      *mvs_game, opponent_tabular, opponent);
+  MVSOpponentPolicy mvs_opponent(&opponent_tabular, std::move(portfolio_dists));
+
+  algorithms::RNRSolver trunk_solver(
+      *mvs_game, config.target_player, &mvs_opponent, config.p,
+      true, true, true);
 
   for (int i = 0; i < config.cfr_iterations; ++i) {
     trunk_solver.EvaluateAndUpdatePolicy();
@@ -348,6 +533,9 @@ std::shared_ptr<TabularPolicy> ContinualResolve(
   auto mvs_policy = trunk_solver.AveragePolicy();
 
   // Step 2: Extract trunk policy into original game's info state space
+  // Both players' strategies come from the RNR solution.
+  // At p=0 this is Nash; at p=1 target best-responds, opponent best-responds
+  // to target; at intermediate p both are the RNR equilibrium strategies.
   TabularPolicy trunk;
   std::function<void(const State&, const State&)> copy_trunk =
       [&](const State& mvs_state, const State& orig_state) {

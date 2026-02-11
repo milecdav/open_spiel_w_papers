@@ -87,6 +87,59 @@ class GadgetPolicyWrapper : public Policy {
 };
 
 // ============================================================================
+// MVSOpponentPolicy: Adapts opponent model for MVS game with RNR
+// ============================================================================
+
+// When using RNR on the MVS trunk game, the fixed opponent model needs to
+// provide action probabilities for both regular game nodes AND the MVS
+// portfolio choice nodes.
+//
+// At the MVS depth limit, RNR effectively maintains two "worlds":
+//   - Fixed (weight p): opponent plays according to model. At the depth
+//     limit, the opponent's behavioral strategy induces a distribution over
+//     the enumerated pure strategies. For each pure strategy k:
+//       model_prob(k) = Π_{I in strategy_k} σ_model(I, action_k(I))
+//   - Free (weight 1-p): opponent plays whatever CFR determines. Normal
+//     MVS portfolio selection with all pure strategies.
+//
+// RNR handles the p-weighted combination at terminals:
+//   V_target = returns * ((1-p)*free_reach + p*fixed_reach) * chance_reach
+//
+// At portfolio choice nodes, the fixed reach is multiplied by model_prob(k),
+// so the total fixed contribution is:
+//   Σ_k payoff(i,k) * fixed_reach * model_prob(k) = E_model[payoff(i)]
+//
+// This correctly computes the expected value against the model in the fixed
+// part and the equilibrium value in the free part.
+class MVSOpponentPolicy : public Policy {
+ public:
+  // underlying: the opponent model (original game info states)
+  // portfolio_probs: precomputed distribution over pure strategies at each
+  //   MVS portfolio info state (e.g. "base:MVSP_SEL1" -> [(0, p0), ...])
+  MVSOpponentPolicy(const Policy* underlying,
+                     std::unordered_map<std::string, ActionsAndProbs>
+                         portfolio_probs);
+
+  ActionsAndProbs GetStatePolicy(const std::string& info_state) const override;
+  ActionsAndProbs GetStatePolicy(const State& state,
+                                 Player player) const override;
+
+ private:
+  const Policy* underlying_;
+  std::unordered_map<std::string, ActionsAndProbs> portfolio_probs_;
+};
+
+// Precompute the opponent model's distribution over pure strategies at each
+// depth-limited state in the MVS game. Traverses the MVS game tree, finds
+// all portfolio choice nodes for the opponent, and computes model_prob(k)
+// for each pure strategy k.
+std::unordered_map<std::string, ActionsAndProbs>
+PrecomputeMVSPortfolioDistributions(
+    const MVSGameWithSubtreePureStrategies& mvs_game,
+    const Policy& opponent_model,
+    Player opponent);
+
+// ============================================================================
 // ResolvingConfig: Unified configuration for subgame resolving
 // ============================================================================
 
@@ -127,15 +180,18 @@ std::shared_ptr<TabularPolicy> ResolveSubgames(
 // Single-level continual resolving: solve trunk with MVS, then resolve
 // subgames at the depth boundary.
 //
-// When opponent_model is set in config, the opponent's trunk strategy is
-// fixed to the model using SetFixedPolicy. The target player's trunk
-// strategy is then optimized (best response in trunk). Subgames are
-// resolved using ResolveSubgames with the specified solver/gadget.
+// The trunk MVS game is solved using RNR with the opponent model as the
+// fixed opponent policy. At the MVS depth limit, the fixed opponent's
+// behavioral strategy is decomposed into a distribution over enumerated
+// pure strategies (model_prob(k) = product of action probs under model).
+// This allows RNR to correctly compute the p-weighted mixture:
+//   V_target = (1-p) * V_free_mvs + p * V_model_mvs
 //
 // For CDBR: solver=kRNR, gadget=kNone, p=1.0
-//   → trunk: target's best response, subgames: best response to model
+//   -> trunk: target's best response to model, subgames: BR to model
 // For CDRNR: solver=kRNR, gadget=kResolving or kMaxMargin, 0<p<1
-//   → trunk: target's best response, subgames: RNR tradeoff with gadget
+//   -> trunk: RNR tradeoff, subgames: RNR with gadget
+// For p=0: equivalent to Nash (CFR), both trunk and subgames
 //
 // Parameters:
 //   game: The original game
