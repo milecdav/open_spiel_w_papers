@@ -957,6 +957,113 @@ void TestLeduc_p1_vs_BR() {
 }
 
 // =============================================================================
+// Test 17: ABD p=1 with model-as-portfolio gives exact BR
+// =============================================================================
+// With the opponent model as an exact portfolio entry, the MVS game captures
+// the opponent's behavior exactly beyond the depth limit. So ABD with p=1
+// should recover the exact best response (up to CFR convergence).
+
+void TestABD_p1_ExactBR() {
+  std::cout << "TestABD_p1_ExactBR..." << std::endl;
+
+  // --- Kuhn poker (depth 2, action-based) ---
+  {
+    auto game = LoadGame("kuhn_poker");
+    UniformPolicy uniform;
+    TabularPolicy uniform_tabular = MakeUniformTabular(*game);
+
+    for (int target = 0; target < 2; ++target) {
+      algorithms::TabularBestResponse br(*game, target, &uniform_tabular);
+      TabularPolicy br_policy = br.GetBestResponsePolicy();
+      double br_gain = GainAgainst(*game, target, br_policy, uniform_tabular);
+
+      ResolvingConfig config;
+      config.solver = SolverType::kRNR;
+      config.gadget = GadgetType::kNone;
+      config.opponent_model = &uniform_tabular;
+      config.p = 1.0;
+      config.target_player = target;
+      config.cfr_iterations = 500;
+
+      auto result = ContinualResolve(
+          game, uniform, config, 2, MVSGame::DepthMode::kActionBased);
+      double abd_gain = GainAgainst(*game, target, *result, uniform_tabular);
+
+      double diff = std::abs(abd_gain - br_gain);
+      std::cout << "  Kuhn [P" << target << "] BR=" << br_gain
+                << ", ABD=" << abd_gain << ", diff=" << diff << std::endl;
+      SPIEL_CHECK_LT(diff, 1e-3);
+    }
+  }
+
+  // --- Goofspiel(4) (depth 4, action-based) ---
+  {
+    auto game = LoadGameAsTurnBased(
+        "goofspiel",
+        {{"num_cards", GameParameter(4)},
+         {"imp_info", GameParameter(true)},
+         {"points_order", GameParameter(std::string("descending"))}});
+    UniformPolicy uniform;
+    TabularPolicy uniform_tabular = MakeUniformTabular(*game);
+
+    for (int target = 0; target < 2; ++target) {
+      algorithms::TabularBestResponse br(*game, target, &uniform_tabular);
+      TabularPolicy br_policy = br.GetBestResponsePolicy();
+      double br_gain = GainAgainst(*game, target, br_policy, uniform_tabular);
+
+      ResolvingConfig config;
+      config.solver = SolverType::kRNR;
+      config.gadget = GadgetType::kNone;
+      config.opponent_model = &uniform_tabular;
+      config.p = 1.0;
+      config.target_player = target;
+      config.cfr_iterations = 500;
+
+      auto result = ContinualResolve(
+          game, uniform, config, 4, MVSGame::DepthMode::kActionBased);
+      double abd_gain = GainAgainst(*game, target, *result, uniform_tabular);
+
+      double diff = std::abs(abd_gain - br_gain);
+      std::cout << "  Goofspiel [P" << target << "] BR=" << br_gain
+                << ", ABD=" << abd_gain << ", diff=" << diff << std::endl;
+      SPIEL_CHECK_LT(diff, 1e-3);
+    }
+  }
+
+  // --- Leduc poker (round 3, round-based) ---
+  {
+    auto game = LoadGame("leduc_poker");
+    UniformPolicy uniform;
+    TabularPolicy uniform_tabular = MakeUniformTabular(*game);
+
+    for (int target = 0; target < 2; ++target) {
+      algorithms::TabularBestResponse br(*game, target, &uniform_tabular);
+      TabularPolicy br_policy = br.GetBestResponsePolicy();
+      double br_gain = GainAgainst(*game, target, br_policy, uniform_tabular);
+
+      ResolvingConfig config;
+      config.solver = SolverType::kRNR;
+      config.gadget = GadgetType::kNone;
+      config.opponent_model = &uniform_tabular;
+      config.p = 1.0;
+      config.target_player = target;
+      config.cfr_iterations = 500;
+
+      auto result = ContinualResolve(
+          game, uniform, config, 3, MVSGame::DepthMode::kRoundBased);
+      double abd_gain = GainAgainst(*game, target, *result, uniform_tabular);
+
+      double diff = std::abs(abd_gain - br_gain);
+      std::cout << "  Leduc [P" << target << "] BR=" << br_gain
+                << ", ABD=" << abd_gain << ", diff=" << diff << std::endl;
+      SPIEL_CHECK_LT(diff, 1e-3);
+    }
+  }
+
+  std::cout << "TestABD_p1_ExactBR PASSED" << std::endl;
+}
+
+// =============================================================================
 // Main
 // =============================================================================
 
@@ -982,6 +1089,10 @@ int main(int argc, char** argv) {
     open_spiel::TestLeduc_p1_vs_BR();
     return 0;
   }
+  if (arg == "exact_br") {
+    open_spiel::TestABD_p1_ExactBR();
+    return 0;
+  }
 
   open_spiel::TestGadgetPolicyWrapper();
   open_spiel::TestResolveSubgamesCFR();
@@ -999,6 +1110,7 @@ int main(int argc, char** argv) {
   open_spiel::TestGoofspiel_p1_vs_BR();
   open_spiel::TestLeduc_p0_vs_Gadget();
   open_spiel::TestLeduc_p1_vs_BR();
+  open_spiel::TestABD_p1_ExactBR();
 
   std::cout << "\nAll tests passed!" << std::endl;
   return 0;

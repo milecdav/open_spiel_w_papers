@@ -1202,4 +1202,42 @@ std::unordered_map<std::string, double> ExtractReachProbsFromMVS(
   return reach_probs;
 }
 
+std::unordered_map<std::string, double> ExtractChanceReachFromMVS(
+    const MVSGameWithSubtreePureStrategies& mvs_game) {
+  std::unordered_map<std::string, double> chance_reach;
+
+  std::function<void(const State&, double)> traverse =
+      [&](const State& state, double reach) {
+    if (state.IsTerminal()) return;
+
+    auto* mvs_state =
+        dynamic_cast<const MVSStateWithSubtreePureStrategies*>(&state);
+    if (mvs_state &&
+        mvs_state->GetPhase() == MVSState::Phase::kPortfolioP1) {
+      const State& underlying = mvs_state->GetUnderlyingState();
+      std::string hist = underlying.HistoryString();
+      chance_reach[hist] = reach;
+      return;
+    }
+
+    if (state.IsChanceNode()) {
+      for (const auto& [action, prob] : state.ChanceOutcomes()) {
+        auto next = state.Clone();
+        next->ApplyAction(action);
+        traverse(*next, reach * prob);
+      }
+    } else {
+      // Player actions don't contribute to chance reach
+      for (Action a : state.LegalActions()) {
+        auto next = state.Clone();
+        next->ApplyAction(a);
+        traverse(*next, reach);
+      }
+    }
+  };
+
+  traverse(*mvs_game.NewInitialState(), 1.0);
+  return chance_reach;
+}
+
 }  // namespace open_spiel

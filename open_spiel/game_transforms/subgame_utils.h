@@ -66,6 +66,12 @@ struct SubgameDecomposition {
   std::array<std::unordered_map<std::string, double>, 2> reach_probs;
   // Counterfactual values per player
   std::array<std::unordered_map<std::string, double>, 2> cfvs;
+  // Chance reach at each subgame root (optional, keyed by history string).
+  // When populated, used to correct the joint reach computation:
+  //   joint_reach(h) = reach_probs[0][h] * reach_probs[1][h] / chance_reach[h]
+  // This is needed because reach_probs[i] includes chance, so r0*r1 would
+  // double-count chance: chance^2 * p0 * p1 instead of chance * p0 * p1.
+  std::unordered_map<std::string, double> chance_reach;
 };
 
 // Decompose a game at a round boundary (chance-node count).

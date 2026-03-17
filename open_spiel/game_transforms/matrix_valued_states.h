@@ -379,6 +379,18 @@ std::unordered_map<std::string, double> ExtractReachProbsFromMVS(
     const Policy& mvs_policy,
     Player reaching_player);
 
+// Extract chance reach probabilities at depth-limited states.
+// Computes the product of chance probabilities along the path to each
+// depth-limited state (excluding player action probabilities).
+//
+// This is needed to correctly compute joint reach:
+//   joint_reach(h) = reach[0](h) * reach[1](h) / chance_reach(h)
+// since reach[i] already includes chance, so r0*r1 double-counts it.
+//
+// Returns: Map from underlying state history string to chance reach.
+std::unordered_map<std::string, double> ExtractChanceReachFromMVS(
+    const MVSGameWithSubtreePureStrategies& mvs_game);
+
 }  // namespace open_spiel
 
 #endif  // OPEN_SPIEL_GAME_TRANSFORMS_MATRIX_VALUED_STATES_H_

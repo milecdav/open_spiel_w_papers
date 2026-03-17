@@ -361,6 +361,36 @@ PrecomputeMVSPortfolioDistributions(
 }
 
 // ============================================================================
+// Helper: compute correct joint reach for unsafe subgames
+// ============================================================================
+
+namespace {
+
+// Compute joint reach = r0 * r1 / chance_reach when chance_reach is available,
+// otherwise fall back to r0 * r1 (which double-counts chance).
+// This is needed because reach_probs[i] = chance * player_i_actions,
+// so r0 * r1 = chance^2 * p0 * p1, but we want chance * p0 * p1.
+double ComputeJointReach(
+    const std::string& hist,
+    const SubgameDecomposition& decomp) {
+  double r0 = 0, r1 = 0;
+  auto it0 = decomp.reach_probs[0].find(hist);
+  if (it0 != decomp.reach_probs[0].end()) r0 = it0->second;
+  auto it1 = decomp.reach_probs[1].find(hist);
+  if (it1 != decomp.reach_probs[1].end()) r1 = it1->second;
+
+  double total = r0 * r1;
+  // Correct for chance double-counting if chance_reach is available
+  auto it_c = decomp.chance_reach.find(hist);
+  if (it_c != decomp.chance_reach.end() && it_c->second > 0) {
+    total /= it_c->second;
+  }
+  return total;
+}
+
+}  // namespace
+
+// ============================================================================
 // ResolveSubgames
 // ============================================================================
 
@@ -387,12 +417,7 @@ std::shared_ptr<TabularPolicy> ResolveSubgames(
         std::vector<double> total_reaches;
         for (const auto& root : roots) {
           std::string hist = root->HistoryString();
-          double r0 = 0, r1 = 0;
-          auto it0 = decomp.reach_probs[0].find(hist);
-          if (it0 != decomp.reach_probs[0].end()) r0 = it0->second;
-          auto it1 = decomp.reach_probs[1].find(hist);
-          if (it1 != decomp.reach_probs[1].end()) r1 = it1->second;
-          double total = r0 * r1;
+          double total = ComputeJointReach(hist, decomp);
           if (total > 0) {
             subgame_roots.push_back(root->Clone());
             total_reaches.push_back(total);
@@ -470,12 +495,7 @@ std::shared_ptr<TabularPolicy> ResolveSubgames(
         std::vector<double> total_reaches;
         for (const auto& root : roots) {
           std::string hist = root->HistoryString();
-          double r0 = 0, r1 = 0;
-          auto it0 = decomp.reach_probs[0].find(hist);
-          if (it0 != decomp.reach_probs[0].end()) r0 = it0->second;
-          auto it1 = decomp.reach_probs[1].find(hist);
-          if (it1 != decomp.reach_probs[1].end()) r1 = it1->second;
-          double total = r0 * r1;
+          double total = ComputeJointReach(hist, decomp);
           if (total > 0) {
             subgame_roots.push_back(root->Clone());
             total_reaches.push_back(total);
@@ -690,6 +710,37 @@ std::shared_ptr<TabularPolicy> ContinualResolve(
 
   decomp.reach_probs[0] = ExtractReachProbsFromMVS(*mvs_game, *mvs_policy, 0);
   decomp.reach_probs[1] = ExtractReachProbsFromMVS(*mvs_game, *mvs_policy, 1);
+  decomp.chance_reach = ExtractChanceReachFromMVS(*mvs_game);
+
+  // Fix opponent's reach: the MVS policy gives the *free* opponent's reach,
+  // but the actual opponent is (1-p)*free + p*model. At p=1, the free part
+  // has weight 0 so its reach is arbitrary. We need to blend with the model's
+  // actual reach on the original game.
+  if (config.p > 0 && config.solver == SolverType::kRNR) {
+    // Collect all subgame root states for reach computation
+    std::vector<const State*> root_ptrs;
+    for (const auto& [pub_obs, roots] : decomp.grouped_subgames) {
+      for (const auto& root : roots) {
+        root_ptrs.push_back(root.get());
+      }
+    }
+    auto model_reach = ComputeReachProbabilities(
+        *game, *opponent_tabular, opponent, root_ptrs);
+
+    auto& opp_reach = decomp.reach_probs[opponent];
+    // Blend: (1-p) * mvs_reach + p * model_reach
+    for (auto& [hist, reach] : opp_reach) {
+      auto it = model_reach.find(hist);
+      double model_r = (it != model_reach.end()) ? it->second : 0.0;
+      reach = (1 - config.p) * reach + config.p * model_r;
+    }
+    // Add entries from model_reach not in mvs_reach
+    for (const auto& [hist, model_r] : model_reach) {
+      if (opp_reach.count(hist) == 0) {
+        opp_reach[hist] = config.p * model_r;
+      }
+    }
+  }
   decomp.cfvs[0] = ExtractCFVsFromMVSSolution(*mvs_game, *mvs_policy, 0);
   decomp.cfvs[1] = ExtractCFVsFromMVSSolution(*mvs_game, *mvs_policy, 1);
 
