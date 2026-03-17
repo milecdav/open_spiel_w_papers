@@ -140,6 +140,42 @@ PrecomputeMVSPortfolioDistributions(
     Player opponent);
 
 // ============================================================================
+// MVSModelEntryPolicy: Adapts opponent model for MVS game with model entry
+// ============================================================================
+
+// When using RNR on an MVS game where the opponent model has been appended as
+// the last portfolio entry, the fixed opponent should:
+//   - At portfolio choice nodes: always select the last action (model entry),
+//     returning a full ActionsAndProbs with prob 1 on model entry, 0 elsewhere
+//   - At regular game nodes: delegate to the underlying model policy
+class MVSModelEntryPolicy : public Policy {
+ public:
+  // underlying: the opponent model (original game info states)
+  // portfolio_probs: map from MVS portfolio choice info state to
+  //   full ActionsAndProbs (prob 1 on model entry, 0 on all others)
+  MVSModelEntryPolicy(const Policy* underlying,
+                      std::unordered_map<std::string, ActionsAndProbs>
+                          portfolio_probs);
+
+  ActionsAndProbs GetStatePolicy(const std::string& info_state) const override;
+  ActionsAndProbs GetStatePolicy(const State& state,
+                                 Player player) const override;
+
+ private:
+  const Policy* underlying_;
+  // Map from MVS portfolio choice info state to full probability distribution
+  // (1.0 on model entry, 0.0 on all other entries)
+  std::unordered_map<std::string, ActionsAndProbs> portfolio_probs_;
+};
+
+// Pre-traverse the MVS game to find the full probability distribution at each
+// opponent portfolio choice node, with probability 1 on the model entry
+// (last action) and 0 on all other entries.
+std::unordered_map<std::string, ActionsAndProbs> PrecomputeModelActionIndices(
+    const MVSGameWithSubtreePureStrategies& mvs_game,
+    Player opponent);
+
+// ============================================================================
 // ResolvingConfig: Unified configuration for subgame resolving
 // ============================================================================
 

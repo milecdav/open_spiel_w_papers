@@ -719,11 +719,15 @@ std::unordered_map<int, std::vector<double>> ComputePayoffMatrixBatch(
 MVSGameWithSubtreePureStrategies::MVSGameWithSubtreePureStrategies(
     std::shared_ptr<const Game> game,
     int depth_limit,
-    DepthMode depth_mode)
+    DepthMode depth_mode,
+    std::shared_ptr<Policy> opponent_model,
+    Player opponent_player)
     : WrappedGame(game, ConvertTypeForSubtree(game->GetType()),
                   game->GetParameters()),
       depth_limit_(depth_limit),
-      depth_mode_(depth_mode) {
+      depth_mode_(depth_mode),
+      opponent_model_(std::move(opponent_model)),
+      opponent_player_(opponent_player) {
   SPIEL_CHECK_GE(depth_limit_, 0);
   SPIEL_CHECK_EQ(game->NumPlayers(), 2);
 }
@@ -824,6 +828,17 @@ void MVSStateWithSubtreePureStrategies::EnsurePortfoliosComputed() const {
   // Enumerate pure strategies for both players from the current state
   portfolio_p0_ = EnumerateSubtreePureStrategies(*state_, 0);
   portfolio_p1_ = EnumerateSubtreePureStrategies(*state_, 1);
+
+  // Add opponent model as extra portfolio entry if set
+  const auto* game = GetMVSGame();
+  if (game->OpponentModel()) {
+    if (game->OpponentPlayer() == 0) {
+      portfolio_p0_.push_back(game->OpponentModel());
+    } else {
+      portfolio_p1_.push_back(game->OpponentModel());
+    }
+  }
+
   portfolios_computed_ = true;
 }
 
@@ -1057,9 +1072,12 @@ std::shared_ptr<const MVSGameWithSubtreePureStrategies>
 CreateMVSGameWithSubtreePureStrategies(
     std::shared_ptr<const Game> game,
     int depth_limit,
-    MVSGame::DepthMode depth_mode) {
+    MVSGame::DepthMode depth_mode,
+    std::shared_ptr<Policy> opponent_model,
+    Player opponent_player) {
   return std::make_shared<MVSGameWithSubtreePureStrategies>(
-      std::move(game), depth_limit, depth_mode);
+      std::move(game), depth_limit, depth_mode,
+      std::move(opponent_model), opponent_player);
 }
 
 // ============================================================================

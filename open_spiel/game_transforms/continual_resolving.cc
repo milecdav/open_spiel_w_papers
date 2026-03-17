@@ -163,6 +163,113 @@ ActionsAndProbs MVSOpponentPolicy::GetStatePolicy(
 }
 
 // ============================================================================
+// MVSModelEntryPolicy
+// ============================================================================
+
+MVSModelEntryPolicy::MVSModelEntryPolicy(
+    const Policy* underlying,
+    std::unordered_map<std::string, ActionsAndProbs> portfolio_probs)
+    : underlying_(underlying),
+      portfolio_probs_(std::move(portfolio_probs)) {}
+
+ActionsAndProbs MVSModelEntryPolicy::GetStatePolicy(
+    const std::string& info_state) const {
+  // Check if this is an MVS portfolio choice info state for the opponent
+  auto it = portfolio_probs_.find(info_state);
+  if (it != portfolio_probs_.end()) {
+    // Return full distribution with prob 1 on model entry, 0 elsewhere
+    return it->second;
+  }
+  // Delegate to underlying model for regular info states
+  return underlying_->GetStatePolicy(info_state);
+}
+
+ActionsAndProbs MVSModelEntryPolicy::GetStatePolicy(
+    const State& state, Player player) const {
+  std::string info_state = state.InformationStateString(player);
+  auto result = GetStatePolicy(info_state);
+  if (!result.empty()) return result;
+  // Fall back to uniform
+  auto legal = state.LegalActions(player);
+  if (legal.empty()) return {};
+  double prob = 1.0 / legal.size();
+  for (Action a : legal) {
+    result.push_back({a, prob});
+  }
+  return result;
+}
+
+std::unordered_map<std::string, ActionsAndProbs> PrecomputeModelActionIndices(
+    const MVSGameWithSubtreePureStrategies& mvs_game,
+    Player opponent) {
+  std::unordered_map<std::string, ActionsAndProbs> result;
+
+  // Determine which portfolio phase corresponds to the opponent
+  // P0 selects at kPortfolioP1, P1 selects at kPortfolioP2
+  auto opponent_phase = (opponent == 0)
+      ? MVSState::Phase::kPortfolioP1
+      : MVSState::Phase::kPortfolioP2;
+
+  std::function<void(const State&)> traverse = [&](const State& state) {
+    if (state.IsTerminal()) return;
+
+    auto* mvs_state =
+        dynamic_cast<const MVSStateWithSubtreePureStrategies*>(&state);
+    if (!mvs_state) return;
+
+    // At the opponent's portfolio choice, build full distribution with
+    // prob 1 on model entry (last action), 0 on all others
+    if (mvs_state->GetPhase() == opponent_phase) {
+      std::string info_state = state.InformationStateString(opponent);
+      if (result.count(info_state) == 0) {
+        auto legal = state.LegalActions();
+        SPIEL_CHECK_FALSE(legal.empty());
+        // The model entry is appended last, so it's the last legal action
+        Action model_action = legal.back();
+        ActionsAndProbs dist;
+        dist.reserve(legal.size());
+        for (Action a : legal) {
+          dist.push_back({a, (a == model_action) ? 1.0 : 0.0});
+        }
+        result[info_state] = std::move(dist);
+      }
+      return;  // Don't traverse deeper into MVS phases
+    }
+
+    // At matrix terminal, stop
+    if (mvs_state->GetPhase() == MVSState::Phase::kMatrixTerminal) return;
+
+    // At other portfolio phases (target player's), traverse all actions
+    if (mvs_state->GetPhase() != MVSState::Phase::kNormal) {
+      for (Action a : state.LegalActions()) {
+        auto child = state.Clone();
+        child->ApplyAction(a);
+        traverse(*child);
+      }
+      return;
+    }
+
+    // Normal phase: traverse game tree
+    if (state.IsChanceNode()) {
+      for (const auto& [a, p] : state.ChanceOutcomes()) {
+        auto child = state.Clone();
+        child->ApplyAction(a);
+        traverse(*child);
+      }
+    } else {
+      for (Action a : state.LegalActions()) {
+        auto child = state.Clone();
+        child->ApplyAction(a);
+        traverse(*child);
+      }
+    }
+  };
+
+  traverse(*mvs_game.NewInitialState());
+  return result;
+}
+
+// ============================================================================
 // PrecomputeMVSPortfolioDistributions
 // ============================================================================
 
@@ -503,25 +610,29 @@ std::shared_ptr<TabularPolicy> ContinualResolve(
     const ResolvingConfig& config,
     int depth,
     MVSGame::DepthMode depth_mode) {
-  // Tabularize opponent model so string-based GetStatePolicy works
-  TabularPolicy opponent_tabular = TabularizePolicy(*game, opponent_model);
+  // Tabularize opponent model so string-based GetStatePolicy works.
+  // Use shared_ptr so it can be passed to the MVS game as the model entry.
+  auto opponent_tabular = std::make_shared<TabularPolicy>(
+      TabularizePolicy(*game, opponent_model));
 
-  // Step 1: Create and solve MVS trunk
+  int opponent = 1 - config.target_player;
+
+  // Step 1: Create and solve MVS trunk.
+  // Pass the opponent model as an extra portfolio entry for the opponent player.
   auto mvs_game = CreateMVSGameWithSubtreePureStrategies(
-      game, depth, depth_mode);
+      game, depth, depth_mode, opponent_tabular, opponent);
 
   auto trunk_is = (depth_mode == MVSGame::DepthMode::kRoundBased)
       ? CollectInfoStateStringsBeforeRound(*game, depth)
       : CollectInfoStateStringsBeforeDepth(*game, depth);
-  int opponent = 1 - config.target_player;
 
   // Use RNR for the trunk to respect the p parameter.
-  // The MVSOpponentPolicy handles both regular info states (delegating
-  // to the opponent model) and MVS portfolio choice info states (providing
-  // the model's distribution over pure strategies).
-  auto portfolio_dists = PrecomputeMVSPortfolioDistributions(
-      *mvs_game, opponent_tabular, opponent);
-  MVSOpponentPolicy mvs_opponent(&opponent_tabular, std::move(portfolio_dists));
+  // MVSModelEntryPolicy handles both regular info states (delegating to the
+  // opponent model) and MVS portfolio choice info states for the opponent
+  // (always selecting the model entry, i.e., the last action).
+  auto model_indices = PrecomputeModelActionIndices(*mvs_game, opponent);
+  MVSModelEntryPolicy mvs_opponent(opponent_tabular.get(),
+                                   std::move(model_indices));
 
   algorithms::RNRSolver trunk_solver(
       *mvs_game, config.target_player, &mvs_opponent, config.p,
@@ -584,7 +695,7 @@ std::shared_ptr<TabularPolicy> ContinualResolve(
 
   // Step 4: Resolve subgames
   ResolvingConfig subgame_config = config;
-  subgame_config.opponent_model = &opponent_tabular;
+  subgame_config.opponent_model = opponent_tabular.get();
 
   return ResolveSubgames(decomp, trunk, subgame_config);
 }

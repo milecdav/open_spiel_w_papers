@@ -229,9 +229,14 @@ class MVSGameWithSubtreePureStrategies : public WrappedGame {
  public:
   using DepthMode = MVSGame::DepthMode;
 
-  MVSGameWithSubtreePureStrategies(std::shared_ptr<const Game> game,
-                                    int depth_limit,
-                                    DepthMode depth_mode = DepthMode::kActionBased);
+  // Optional opponent_model: if set, the model is appended as an extra
+  // portfolio entry for the opponent player (after enumerating pure strategies).
+  MVSGameWithSubtreePureStrategies(
+      std::shared_ptr<const Game> game,
+      int depth_limit,
+      DepthMode depth_mode = DepthMode::kActionBased,
+      std::shared_ptr<Policy> opponent_model = nullptr,
+      Player opponent_player = 0);
 
   std::unique_ptr<State> NewInitialState() const override;
   int NumDistinctActions() const override;
@@ -256,11 +261,21 @@ class MVSGameWithSubtreePureStrategies : public WrappedGame {
     return total;
   }
 
+  // Access to optional opponent model
+  const std::shared_ptr<Policy>& OpponentModel() const {
+    return opponent_model_;
+  }
+  Player OpponentPlayer() const { return opponent_player_; }
+
  private:
   friend class MVSStateWithSubtreePureStrategies;
 
   int depth_limit_;
   DepthMode depth_mode_;
+
+  // Optional: append this model as an extra portfolio entry for the opponent
+  std::shared_ptr<Policy> opponent_model_;
+  Player opponent_player_;
 
   // Cache: (history_key, p1_idx, p2_idx) -> returns
   // Using nested structure for simplicity
@@ -268,12 +283,16 @@ class MVSGameWithSubtreePureStrategies : public WrappedGame {
       std::unordered_map<int, std::vector<double>>> payoff_cache_;
 };
 
-// Factory function for MVS game with automatic subtree pure strategies
+// Factory function for MVS game with automatic subtree pure strategies.
+// Optional opponent_model: if set, it is appended as an extra portfolio entry
+// for opponent_player (after the enumerated pure strategies).
 std::shared_ptr<const MVSGameWithSubtreePureStrategies>
 CreateMVSGameWithSubtreePureStrategies(
     std::shared_ptr<const Game> game,
     int depth_limit,
-    MVSGame::DepthMode depth_mode = MVSGame::DepthMode::kActionBased);
+    MVSGame::DepthMode depth_mode = MVSGame::DepthMode::kActionBased,
+    std::shared_ptr<Policy> opponent_model = nullptr,
+    Player opponent_player = 0);
 
 // ============================================================================
 // Pure Strategy Enumeration Utilities
