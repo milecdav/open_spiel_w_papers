@@ -731,6 +731,232 @@ void TestCDRNRLeduc() {
 }
 
 // =============================================================================
+// Test 13: Goofspiel p=0 vs Gadget resolve (should be equivalent)
+// =============================================================================
+
+void TestGoofspiel_p0_vs_Gadget() {
+  std::cout << "TestGoofspiel_p0_vs_Gadget..." << std::endl;
+
+  auto game = LoadGameAsTurnBased(
+      "goofspiel",
+      {{"num_cards", GameParameter(4)},
+       {"imp_info", GameParameter(true)},
+       {"points_order", GameParameter(std::string("descending"))}});
+  const int iters = 300;
+  const int depth = 4;
+
+  // --- Baseline: standard gadget resolve (CFR on full game + gadget) ---
+  algorithms::CFRSolverBase cfr_solver(*game, true, true, true);
+  for (int i = 0; i < iters; ++i) cfr_solver.EvaluateAndUpdatePolicy();
+  auto cfr_policy = cfr_solver.AveragePolicy();
+  TabularPolicy cfr_trunk = cfr_solver.TabularAveragePolicy();
+
+  auto decomp = DecomposeGameAtDepth(game, *cfr_policy, depth);
+
+  ResolvingConfig gadget_config;
+  gadget_config.solver = SolverType::kCFR;
+  gadget_config.gadget = GadgetType::kResolving;
+  gadget_config.cfr_iterations = iters;
+
+  auto gadget_result = ResolveSubgames(decomp, cfr_trunk, gadget_config);
+  double gadget_exp = algorithms::Exploitability(*game, *gadget_result);
+
+  UniformPolicy uniform;
+  TabularPolicy uniform_tabular = MakeUniformTabular(*game);
+
+  // --- Test CDRNR p=0 for both players ---
+  for (int target = 0; target < 2; ++target) {
+    double gadget_gain = GainAgainst(
+        *game, target, *gadget_result, uniform_tabular);
+
+    ResolvingConfig cdrnr_config;
+    cdrnr_config.solver = SolverType::kRNR;
+    cdrnr_config.gadget = GadgetType::kResolving;
+    cdrnr_config.opponent_model = &uniform_tabular;
+    cdrnr_config.p = 0.0;
+    cdrnr_config.target_player = target;
+    cdrnr_config.cfr_iterations = iters;
+
+    auto cdrnr_result = ContinualResolve(
+        game, uniform, cdrnr_config, depth, MVSGame::DepthMode::kActionBased);
+    double cdrnr_exp = algorithms::Exploitability(*game, *cdrnr_result);
+    double cdrnr_gain = GainAgainst(
+        *game, target, *cdrnr_result, uniform_tabular);
+
+    std::cout << "  [P" << target << "] Gadget: expl=" << gadget_exp
+              << ", gain=" << gadget_gain << std::endl;
+    std::cout << "  [P" << target << "] CDRNR:  expl=" << cdrnr_exp
+              << ", gain=" << cdrnr_gain << std::endl;
+
+    // CDRNR p=0 should produce similar exploitability as gadget resolve
+    SPIEL_CHECK_LT(cdrnr_exp, 0.15);
+    SPIEL_CHECK_LT(std::abs(cdrnr_exp - gadget_exp), 0.1);
+  }
+
+  std::cout << "TestGoofspiel_p0_vs_Gadget PASSED" << std::endl;
+}
+
+// =============================================================================
+// Test 14: Goofspiel p=1 vs best response (should be equivalent)
+// =============================================================================
+
+void TestGoofspiel_p1_vs_BR() {
+  std::cout << "TestGoofspiel_p1_vs_BR..." << std::endl;
+
+  auto game = LoadGameAsTurnBased(
+      "goofspiel",
+      {{"num_cards", GameParameter(4)},
+       {"imp_info", GameParameter(true)},
+       {"points_order", GameParameter(std::string("descending"))}});
+  UniformPolicy uniform;
+  TabularPolicy uniform_tabular = MakeUniformTabular(*game);
+  const int iters = 300;
+  const int depth = 4;
+
+  for (int target = 0; target < 2; ++target) {
+    // --- Baseline: tabular best response against uniform ---
+    algorithms::TabularBestResponse br(*game, target, &uniform_tabular);
+    TabularPolicy br_policy = br.GetBestResponsePolicy();
+    double br_gain = GainAgainst(*game, target, br_policy, uniform_tabular);
+
+    // --- CDRNR with p=1 (should be close to BR) ---
+    ResolvingConfig cdrnr_config;
+    cdrnr_config.solver = SolverType::kRNR;
+    cdrnr_config.gadget = GadgetType::kNone;
+    cdrnr_config.opponent_model = &uniform_tabular;
+    cdrnr_config.p = 1.0;
+    cdrnr_config.target_player = target;
+    cdrnr_config.cfr_iterations = iters;
+
+    auto cdrnr_result = ContinualResolve(
+        game, uniform, cdrnr_config, depth, MVSGame::DepthMode::kActionBased);
+    double cdrnr_gain = GainAgainst(
+        *game, target, *cdrnr_result, uniform_tabular);
+    double cdrnr_exp = algorithms::Exploitability(*game, *cdrnr_result);
+
+    std::cout << "  [P" << target << "] BR:    gain=" << br_gain << std::endl;
+    std::cout << "  [P" << target << "] CDRNR: gain=" << cdrnr_gain
+              << ", expl=" << cdrnr_exp << std::endl;
+    std::cout << "  [P" << target << "] Gain diff: "
+              << std::abs(cdrnr_gain - br_gain) << std::endl;
+
+    // CDRNR p=1 should exploit uniform similarly to full BR
+    SPIEL_CHECK_GT(cdrnr_gain, br_gain - 0.2);
+  }
+
+  std::cout << "TestGoofspiel_p1_vs_BR PASSED" << std::endl;
+}
+
+// =============================================================================
+// Test 15: Leduc p=0 vs Gadget resolve (should be equivalent)
+// =============================================================================
+
+void TestLeduc_p0_vs_Gadget() {
+  std::cout << "TestLeduc_p0_vs_Gadget..." << std::endl;
+
+  auto game = LoadGame("leduc_poker");
+  const int iters = 500;
+  const int depth = 3;
+
+  // --- Baseline: standard gadget resolve (CFR on full game + gadget) ---
+  algorithms::CFRSolverBase cfr_solver(*game, true, true, true);
+  for (int i = 0; i < iters; ++i) cfr_solver.EvaluateAndUpdatePolicy();
+  auto cfr_policy = cfr_solver.AveragePolicy();
+  TabularPolicy cfr_trunk = cfr_solver.TabularAveragePolicy();
+
+  auto decomp = DecomposeGameAtRound(game, *cfr_policy, depth);
+
+  ResolvingConfig gadget_config;
+  gadget_config.solver = SolverType::kCFR;
+  gadget_config.gadget = GadgetType::kResolving;
+  gadget_config.cfr_iterations = iters;
+
+  auto gadget_result = ResolveSubgames(decomp, cfr_trunk, gadget_config);
+  double gadget_exp = algorithms::Exploitability(*game, *gadget_result);
+
+  UniformPolicy uniform;
+  TabularPolicy uniform_tabular = MakeUniformTabular(*game);
+
+  // --- Test CDRNR p=0 for both players ---
+  for (int target = 0; target < 2; ++target) {
+    double gadget_gain = GainAgainst(
+        *game, target, *gadget_result, uniform_tabular);
+
+    ResolvingConfig cdrnr_config;
+    cdrnr_config.solver = SolverType::kRNR;
+    cdrnr_config.gadget = GadgetType::kResolving;
+    cdrnr_config.opponent_model = &uniform_tabular;
+    cdrnr_config.p = 0.0;
+    cdrnr_config.target_player = target;
+    cdrnr_config.cfr_iterations = iters;
+
+    auto cdrnr_result = ContinualResolve(
+        game, uniform, cdrnr_config, depth, MVSGame::DepthMode::kRoundBased);
+    double cdrnr_exp = algorithms::Exploitability(*game, *cdrnr_result);
+    double cdrnr_gain = GainAgainst(
+        *game, target, *cdrnr_result, uniform_tabular);
+
+    std::cout << "  [P" << target << "] Gadget: expl=" << gadget_exp
+              << ", gain=" << gadget_gain << std::endl;
+    std::cout << "  [P" << target << "] CDRNR:  expl=" << cdrnr_exp
+              << ", gain=" << cdrnr_gain << std::endl;
+
+    // CDRNR p=0 should produce similar exploitability as gadget resolve
+    SPIEL_CHECK_LT(cdrnr_exp, 0.1);
+    SPIEL_CHECK_LT(std::abs(cdrnr_exp - gadget_exp), 0.05);
+  }
+
+  std::cout << "TestLeduc_p0_vs_Gadget PASSED" << std::endl;
+}
+
+// =============================================================================
+// Test 16: Leduc p=1 vs best response (should be equivalent)
+// =============================================================================
+
+void TestLeduc_p1_vs_BR() {
+  std::cout << "TestLeduc_p1_vs_BR..." << std::endl;
+
+  auto game = LoadGame("leduc_poker");
+  UniformPolicy uniform;
+  TabularPolicy uniform_tabular = MakeUniformTabular(*game);
+  const int iters = 500;
+  const int depth = 3;
+
+  for (int target = 0; target < 2; ++target) {
+    // --- Baseline: tabular best response against uniform ---
+    algorithms::TabularBestResponse br(*game, target, &uniform_tabular);
+    TabularPolicy br_policy = br.GetBestResponsePolicy();
+    double br_gain = GainAgainst(*game, target, br_policy, uniform_tabular);
+
+    // --- CDRNR with p=1 (should be close to BR) ---
+    ResolvingConfig cdrnr_config;
+    cdrnr_config.solver = SolverType::kRNR;
+    cdrnr_config.gadget = GadgetType::kNone;
+    cdrnr_config.opponent_model = &uniform_tabular;
+    cdrnr_config.p = 1.0;
+    cdrnr_config.target_player = target;
+    cdrnr_config.cfr_iterations = iters;
+
+    auto cdrnr_result = ContinualResolve(
+        game, uniform, cdrnr_config, depth, MVSGame::DepthMode::kRoundBased);
+    double cdrnr_gain = GainAgainst(
+        *game, target, *cdrnr_result, uniform_tabular);
+    double cdrnr_exp = algorithms::Exploitability(*game, *cdrnr_result);
+
+    std::cout << "  [P" << target << "] BR:    gain=" << br_gain << std::endl;
+    std::cout << "  [P" << target << "] CDRNR: gain=" << cdrnr_gain
+              << ", expl=" << cdrnr_exp << std::endl;
+    std::cout << "  [P" << target << "] Gain diff: "
+              << std::abs(cdrnr_gain - br_gain) << std::endl;
+
+    // CDRNR p=1 should exploit uniform similarly to full BR
+    SPIEL_CHECK_GT(cdrnr_gain, br_gain - 0.5);
+  }
+
+  std::cout << "TestLeduc_p1_vs_BR PASSED" << std::endl;
+}
+
+// =============================================================================
 // Main
 // =============================================================================
 
@@ -738,19 +964,22 @@ void TestCDRNRLeduc() {
 }  // namespace open_spiel
 
 int main(int argc, char** argv) {
+  std::string arg = (argc > 1) ? std::string(argv[1]) : "";
 
-  if (argc > 1 && std::string(argv[1]) == "only_sweep") {
+  if (arg == "only_sweep") {
     open_spiel::TestSweepP();
     return 0;
   }
-
-  if (argc > 1 && std::string(argv[1]) == "goofspiel") {
+  if (arg == "goofspiel") {
     open_spiel::TestCDRNRGoofspiel();
+    open_spiel::TestGoofspiel_p0_vs_Gadget();
+    open_spiel::TestGoofspiel_p1_vs_BR();
     return 0;
   }
-
-  if (argc > 1 && std::string(argv[1]) == "leduc") {
+  if (arg == "leduc") {
     open_spiel::TestCDRNRLeduc();
+    open_spiel::TestLeduc_p0_vs_Gadget();
+    open_spiel::TestLeduc_p1_vs_BR();
     return 0;
   }
 
@@ -766,6 +995,10 @@ int main(int argc, char** argv) {
   open_spiel::TestCDRNR_p1_vs_BR();
   open_spiel::TestCDRNRGoofspiel();
   open_spiel::TestCDRNRLeduc();
+  open_spiel::TestGoofspiel_p0_vs_Gadget();
+  open_spiel::TestGoofspiel_p1_vs_BR();
+  open_spiel::TestLeduc_p0_vs_Gadget();
+  open_spiel::TestLeduc_p1_vs_BR();
 
   std::cout << "\nAll tests passed!" << std::endl;
   return 0;
