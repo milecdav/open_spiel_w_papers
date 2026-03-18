@@ -68,16 +68,16 @@ GameType ConvertType(const GameType& type) {
 MaxMarginGadgetGame::MaxMarginGadgetGame(
     std::shared_ptr<const Game> game,
     std::vector<SubgameRoot> subgame_roots,
-    Player resolving_player,
+    Player adversary_player,
     std::unordered_map<std::string, double> counterfactual_values)
     : WrappedGame(game, ConvertType(game->GetType()), game->GetParameters()),
       subgame_roots_(std::move(subgame_roots)),
-      resolving_player_(resolving_player),
+      adversary_player_(adversary_player),
       counterfactual_values_(std::move(counterfactual_values)),
       max_abs_shift_(0.0) {
   SPIEL_CHECK_GT(subgame_roots_.size(), 0);
-  SPIEL_CHECK_GE(resolving_player_, 0);
-  SPIEL_CHECK_LT(resolving_player_, 2);
+  SPIEL_CHECK_GE(adversary_player_, 0);
+  SPIEL_CHECK_LT(adversary_player_, 2);
   SPIEL_CHECK_EQ(game->NumPlayers(), 2);
 
   ComputeInfoSetData();
@@ -218,7 +218,8 @@ const MaxMarginGadgetGame* MaxMarginGadgetState::GetMaxMarginGame() const {
 Player MaxMarginGadgetState::CurrentPlayer() const {
   switch (phase_) {
     case Phase::kInfoSetChoice:
-      return GetMaxMarginGame()->ResolvingPlayer();
+      // The adversary (non-resolving player) picks info sets
+      return GetMaxMarginGame()->NonResolvingPlayer();
     case Phase::kChance:
       return kChancePlayerId;
     case Phase::kSubgame:
@@ -295,12 +296,12 @@ std::vector<double> MaxMarginGadgetState::Returns() const {
   auto subgame_returns = state_->Returns();
   double shift = mm_game->GetValueShift(chosen_info_state_);
 
-  // Resolving player: subgame return - shift (= original - CFV/W)
-  // Non-resolving player: subgame return + shift (zero-sum preserved)
-  returns[mm_game->ResolvingPlayer()] =
-      subgame_returns[mm_game->ResolvingPlayer()] - shift;
+  // Non-resolving (adversary) player: subgame return - shift (= original - CFV/W)
+  // Resolving player: subgame return + shift (zero-sum preserved)
   returns[mm_game->NonResolvingPlayer()] =
-      subgame_returns[mm_game->NonResolvingPlayer()] + shift;
+      subgame_returns[mm_game->NonResolvingPlayer()] - shift;
+  returns[mm_game->ResolvingPlayer()] =
+      subgame_returns[mm_game->ResolvingPlayer()] + shift;
 
   return returns;
 }
@@ -317,14 +318,14 @@ std::string MaxMarginGadgetState::InformationStateString(Player player) const {
 
   switch (phase_) {
     case Phase::kInfoSetChoice:
-      if (player == mm_game->ResolvingPlayer()) {
+      if (player == mm_game->NonResolvingPlayer()) {
         return "mm_start";
       } else {
         return "mm_choice:opponent_choosing";
       }
 
     case Phase::kChance:
-      if (player == mm_game->ResolvingPlayer()) {
+      if (player == mm_game->NonResolvingPlayer()) {
         return absl::StrCat("mm_choice:", chosen_info_state_);
       } else {
         return "mm_choice:opponent_choosing";
@@ -396,7 +397,7 @@ void MaxMarginGadgetState::DoApplyAction(Action action_id) {
 
   switch (phase_) {
     case Phase::kInfoSetChoice:
-      // Resolving player selects which info set to challenge
+      // Non-resolving (adversary) player selects which info set to challenge
       chosen_info_set_idx_ = action_id;
       chosen_info_state_ = mm_game->InfoSetForAction(action_id);
       phase_ = Phase::kChance;
@@ -434,10 +435,10 @@ void MaxMarginGadgetState::DoApplyAction(Action action_id) {
 std::shared_ptr<const MaxMarginGadgetGame> CreateMaxMarginGadgetGame(
     std::shared_ptr<const Game> game,
     std::vector<SubgameRoot> subgame_roots,
-    Player resolving_player,
+    Player adversary_player,
     std::unordered_map<std::string, double> counterfactual_values) {
   return std::make_shared<MaxMarginGadgetGame>(
-      game, std::move(subgame_roots), resolving_player,
+      game, std::move(subgame_roots), adversary_player,
       std::move(counterfactual_values));
 }
 
@@ -460,28 +461,32 @@ std::shared_ptr<TabularPolicy> ResolveWithMaxMarginGadget(
   }
 
   // Re-solve for both players
-  for (int non_res = 0; non_res < 2; ++non_res) {
-    int res = 1 - non_res;
+  for (int res = 0; res < 2; ++res) {
+    int non_res = 1 - res;
 
     for (const auto& [pub_obs, roots] : decomp.grouped_subgames) {
       auto info_per_player = CollectSubgameInfoStatesPerPlayer(roots);
+      // Roots grouped by non-resolving (adversary) player's info states,
+      // with resolving player's reach probabilities
       auto gadget_roots =
-          BuildSubgameRoots(roots, res, decomp.reach_probs[non_res]);
+          BuildSubgameRoots(roots, non_res, decomp.reach_probs[res]);
       if (gadget_roots.empty()) continue;
 
+      // adversary_player = non_res (picks info sets)
       auto mm_gadget = CreateMaxMarginGadgetGame(
-          decomp.game, std::move(gadget_roots), res, decomp.cfvs[res]);
+          decomp.game, std::move(gadget_roots), non_res, decomp.cfvs[non_res]);
       algorithms::CFRSolverBase solver(*mm_gadget, true, true, true);
       for (int i = 0; i < cfr_iterations; ++i) {
         solver.EvaluateAndUpdatePolicy();
       }
 
+      // Extract the resolving player's strategy from the gadget
       TabularPolicy gadget_policy = solver.TabularAveragePolicy();
       const std::string prefix = "mm_F:subgame:";
       for (const auto& [gadget_is, ap] : gadget_policy.PolicyTable()) {
         if (gadget_is.find(prefix) == 0) {
           std::string orig_is = gadget_is.substr(prefix.length());
-          if (info_per_player[non_res].count(orig_is) > 0) {
+          if (info_per_player[res].count(orig_is) > 0) {
             combined->SetStatePolicy(orig_is, ap);
           }
         }

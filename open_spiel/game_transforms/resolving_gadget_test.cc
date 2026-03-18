@@ -55,7 +55,9 @@ void TestGadgetConstruction() {
   auto gadget = CreateGadgetGame(game, std::move(roots), 1, cfvs);
 
   SPIEL_CHECK_EQ(gadget->NumPlayers(), 2);
-  SPIEL_CHECK_EQ(gadget->ResolvingPlayer(), 1);
+  // adversary_player=1 → ResolvingPlayer=0, NonResolvingPlayer=1
+  SPIEL_CHECK_EQ(gadget->NonResolvingPlayer(), 1);
+  SPIEL_CHECK_EQ(gadget->ResolvingPlayer(), 0);
   SPIEL_CHECK_GT(gadget->NormalizationConstant(), 0);
 
   std::cout << "  " << gadget->NumSubgameRoots() << " roots, k="
@@ -87,9 +89,9 @@ void TestGadgetStateTransitions() {
   for (const auto& [a, p] : outcomes) prob_sum += p;
   SPIEL_CHECK_FLOAT_NEAR(prob_sum, 1.0, 1e-9);
 
-  // Phase 2: Gadget choice (T/F)
+  // Phase 2: Gadget choice (T/F) — non-resolving (adversary) player
   state->ApplyAction(outcomes[0].first);
-  SPIEL_CHECK_EQ(state->CurrentPlayer(), 1);
+  SPIEL_CHECK_EQ(state->CurrentPlayer(), gadget->NonResolvingPlayer());
   auto actions = state->LegalActions();
   SPIEL_CHECK_EQ(actions.size(), 2);
   SPIEL_CHECK_EQ(actions[0], GadgetGame::kTerminateAction);

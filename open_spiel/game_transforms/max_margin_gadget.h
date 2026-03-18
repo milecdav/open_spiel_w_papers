@@ -30,26 +30,30 @@
 // re-solving, as described in Moravcik et al. 2016 (DeepStack).
 //
 // Unlike the original resolving gadget (Burch et al. 2014) which gives the
-// resolving player a per-state T/F choice, the max-margin gadget has the
-// resolving player choose which info set to "challenge". This maximizes the
+// non-resolving player a per-state T/F choice, the max-margin gadget has the
+// non-resolving player choose which info set to "challenge". This maximizes the
 // minimum margin (improvement over the blueprint CFV) across all info sets.
 //
+// Terminology:
+//   - Non-resolving player (adversary): has artificial actions (picks info sets)
+//   - Resolving player: strategy is extracted/refined in the subgame
+//
 // Game structure:
-//   Phase 1 (kInfoSetChoice): Resolving player picks info set I
+//   Phase 1 (kInfoSetChoice): Non-resolving player picks info set I
 //     - Actions: one per distinct info set at subgame roots
-//     - Resolving player sees "mm_start" (single info set)
-//     - Non-resolving player sees "mm_choice:opponent_choosing"
+//     - Non-resolving player sees "mm_start" (single info set)
+//     - Resolving player sees "mm_choice:opponent_choosing"
 //
 //   Phase 2 (kChance): Chance picks state h ∈ I
-//     - Prob(h) = π_{-res}(h) / W(I), where W(I) = Σ_{h'∈I} π_{-res}(h')
+//     - Prob(h) = π_{res}(h) / W(I), where W(I) = Σ_{h'∈I} π_{res}(h')
 //
 //   Phase 3 (kSubgame): Normal subgame play from h
-//     - At terminal: returns shifted by -CFV(I)/W(I) for resolving player
-//       (and +CFV(I)/W(I) for non-resolving, preserving zero-sum)
+//     - At terminal: returns shifted by -CFV(I)/W(I) for non-resolving player
+//       (and +CFV(I)/W(I) for resolving, preserving zero-sum)
 //
 // At the blueprint strategy, the expected shifted value at every info set is 0.
-// If the non-resolving player improves over the blueprint, margins become
-// positive. The resolving player picks the worst info set, so the game value
+// If the resolving player improves over the blueprint, margins become
+// positive. The non-resolving player picks the worst info set, so the game value
 // represents the minimum margin across all info sets.
 
 namespace open_spiel {
@@ -58,10 +62,13 @@ class MaxMarginGadgetState;
 
 class MaxMarginGadgetGame : public WrappedGame {
  public:
+  // adversary_player: the player who picks info sets (has artificial actions).
+  // This is the NON-resolving player in the terminology where "resolving"
+  // means the player whose strategy is being refined/extracted.
   MaxMarginGadgetGame(
       std::shared_ptr<const Game> game,
       std::vector<SubgameRoot> subgame_roots,
-      Player resolving_player,
+      Player adversary_player,
       std::unordered_map<std::string, double> counterfactual_values);
 
   std::unique_ptr<State> NewInitialState() const override;
@@ -69,8 +76,11 @@ class MaxMarginGadgetGame : public WrappedGame {
   int MaxGameLength() const override;
   int MaxChanceOutcomes() const override;
 
-  Player ResolvingPlayer() const { return resolving_player_; }
-  Player NonResolvingPlayer() const { return 1 - resolving_player_; }
+  // ResolvingPlayer: the player whose strategy is being refined/extracted
+  // (plays only in the subgame, no artificial actions)
+  Player ResolvingPlayer() const { return 1 - adversary_player_; }
+  // NonResolvingPlayer: the adversary who picks info sets (artificial actions)
+  Player NonResolvingPlayer() const { return adversary_player_; }
   int NumSubgameRoots() const { return subgame_roots_.size(); }
   int NumInfoSets() const { return info_set_list_.size(); }
 
@@ -104,7 +114,7 @@ class MaxMarginGadgetGame : public WrappedGame {
   void ComputeInfoSetData();
 
   std::vector<SubgameRoot> subgame_roots_;
-  Player resolving_player_;
+  Player adversary_player_;  // The player who picks info sets (non-resolving)
   std::unordered_map<std::string, double> counterfactual_values_;
 
   // Ordered list of distinct info state strings (determines action mapping)
@@ -168,10 +178,13 @@ class MaxMarginGadgetState : public WrappedState {
 };
 
 // Factory function
+// adversary_player: the player who picks info sets (non-resolving, has
+// artificial actions). The OTHER player is the resolving player whose
+// strategy is refined/extracted.
 std::shared_ptr<const MaxMarginGadgetGame> CreateMaxMarginGadgetGame(
     std::shared_ptr<const Game> game,
     std::vector<SubgameRoot> subgame_roots,
-    Player resolving_player,
+    Player adversary_player,
     std::unordered_map<std::string, double> counterfactual_values);
 
 // Re-solve all subgames using the max-margin gadget.

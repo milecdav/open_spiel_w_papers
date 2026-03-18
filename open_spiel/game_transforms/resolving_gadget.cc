@@ -69,19 +69,19 @@ GameType ConvertType(const GameType& type) {
 GadgetGame::GadgetGame(
     std::shared_ptr<const Game> game,
     std::vector<SubgameRoot> subgame_roots,
-    Player resolving_player,
+    Player adversary_player,
     std::unordered_map<std::string, double> counterfactual_values)
     : WrappedGame(game, ConvertType(game->GetType()), game->GetParameters()),
       subgame_roots_(std::move(subgame_roots)),
-      resolving_player_(resolving_player),
+      adversary_player_(adversary_player),
       counterfactual_values_(std::move(counterfactual_values)),
       k_(0.0) {
   SPIEL_CHECK_GT(subgame_roots_.size(), 0);
-  SPIEL_CHECK_GE(resolving_player_, 0);
-  SPIEL_CHECK_LT(resolving_player_, 2);
+  SPIEL_CHECK_GE(adversary_player_, 0);
+  SPIEL_CHECK_LT(adversary_player_, 2);
   SPIEL_CHECK_EQ(game->NumPlayers(), 2);
 
-  // Compute normalization constant k = Σ_r π_{-res}(r)
+  // Compute normalization constant k = Σ_r π_{res}(r)
   for (const auto& root : subgame_roots_) {
     k_ += root.reach_prob;
   }
@@ -97,14 +97,14 @@ void GadgetGame::ComputeTerminatePayoffs() {
     info_state_reach_sums_[root.info_state_string] += root.reach_prob;
   }
 
-  // Then compute T payoffs: T_payoff = k * v^R(I) / Σ_{h∈I} π_{-res}(h)
+  // Then compute T payoffs: T_payoff = k * v^R(I) / Σ_{h∈I} π_{res}(h)
   for (const auto& [info_state, reach_sum] : info_state_reach_sums_) {
     auto it = counterfactual_values_.find(info_state);
     double cf_value = 0.0;
     if (it != counterfactual_values_.end()) {
       cf_value = it->second;
     }
-    // The T payoff for the resolving player
+    // The T payoff for the non-resolving (adversary) player
     terminate_payoffs_[info_state] = k_ * cf_value / reach_sum;
   }
 }
@@ -188,7 +188,8 @@ Player GadgetState::CurrentPlayer() const {
     case Phase::kChance:
       return kChancePlayerId;
     case Phase::kGadgetChoice:
-      return GetGadgetGame()->ResolvingPlayer();
+      // The adversary (non-resolving player) chooses T or F
+      return GetGadgetGame()->NonResolvingPlayer();
     case Phase::kSubgame:
       return state_->CurrentPlayer();
     case Phase::kTerminal:
@@ -257,10 +258,10 @@ std::vector<double> GadgetState::Returns() const {
   }
 
   if (chose_terminate_) {
-    // T was chosen: resolving player gets their original CF value (scaled)
+    // T was chosen: non-resolving (adversary) player gets their original CF value (scaled)
     double t_payoff = gadget_game->GetTerminatePayoff(root_info_state_);
-    returns[gadget_game->ResolvingPlayer()] = t_payoff;
-    returns[gadget_game->NonResolvingPlayer()] = -t_payoff;  // Zero-sum
+    returns[gadget_game->NonResolvingPlayer()] = t_payoff;
+    returns[gadget_game->ResolvingPlayer()] = -t_payoff;  // Zero-sum
   } else {
     // F was chosen: return the subgame returns (scaled by k)
     auto subgame_returns = state_->Returns();
@@ -290,11 +291,11 @@ std::string GadgetState::InformationStateString(Player player) const {
       return "gadget_start";
 
     case Phase::kGadgetChoice:
-      // The resolving player sees their info state at the root
-      if (player == gadget_game->ResolvingPlayer()) {
+      // The non-resolving (adversary) player sees their info state at the root
+      if (player == gadget_game->NonResolvingPlayer()) {
         return absl::StrCat("gadget_choice:", root_info_state_);
       } else {
-        // Non-resolving player doesn't know which root was selected
+        // Resolving player doesn't know which root was selected
         // but knows we're at the gadget choice
         return "gadget_choice:opponent_choosing";
       }
@@ -307,7 +308,7 @@ std::string GadgetState::InformationStateString(Player player) const {
 
     case Phase::kTerminal:
       if (chose_terminate_) {
-        if (player == gadget_game->ResolvingPlayer()) {
+        if (player == gadget_game->NonResolvingPlayer()) {
           return absl::StrCat("gadget_T:", root_info_state_);
         } else {
           return "gadget_T:opponent_terminated";
@@ -384,7 +385,7 @@ void GadgetState::DoApplyAction(Action action_id) {
       break;
 
     case Phase::kGadgetChoice:
-      // Resolving player chooses T or F
+      // Non-resolving (adversary) player chooses T or F
       if (action_id == GadgetGame::kTerminateAction) {
         chose_terminate_ = true;
         phase_ = Phase::kTerminal;
@@ -419,10 +420,10 @@ void GadgetState::DoApplyAction(Action action_id) {
 std::shared_ptr<const GadgetGame> CreateGadgetGame(
     std::shared_ptr<const Game> game,
     std::vector<SubgameRoot> subgame_roots,
-    Player resolving_player,
+    Player adversary_player,
     std::unordered_map<std::string, double> counterfactual_values) {
   return std::make_shared<GadgetGame>(
-      game, std::move(subgame_roots), resolving_player,
+      game, std::move(subgame_roots), adversary_player,
       std::move(counterfactual_values));
 }
 
@@ -445,28 +446,32 @@ std::shared_ptr<TabularPolicy> ResolveWithGadget(
   }
 
   // Re-solve for both players
-  for (int non_res = 0; non_res < 2; ++non_res) {
-    int res = 1 - non_res;
+  for (int res = 0; res < 2; ++res) {
+    int non_res = 1 - res;
 
     for (const auto& [pub_obs, roots] : decomp.grouped_subgames) {
       auto info_per_player = CollectSubgameInfoStatesPerPlayer(roots);
+      // Roots grouped by non-resolving (adversary) player's info states,
+      // with resolving player's reach probabilities
       auto gadget_roots =
-          BuildSubgameRoots(roots, res, decomp.reach_probs[non_res]);
+          BuildSubgameRoots(roots, non_res, decomp.reach_probs[res]);
       if (gadget_roots.empty()) continue;
 
+      // adversary_player = non_res (has T/F artificial actions)
       auto gadget = CreateGadgetGame(
-          decomp.game, std::move(gadget_roots), res, decomp.cfvs[res]);
+          decomp.game, std::move(gadget_roots), non_res, decomp.cfvs[non_res]);
       algorithms::CFRSolverBase solver(*gadget, true, true, true);
       for (int i = 0; i < cfr_iterations; ++i) {
         solver.EvaluateAndUpdatePolicy();
       }
 
+      // Extract the resolving player's strategy from the gadget
       TabularPolicy gadget_policy = solver.TabularAveragePolicy();
       const std::string prefix = "gadget_F:subgame:";
       for (const auto& [gadget_is, ap] : gadget_policy.PolicyTable()) {
         if (gadget_is.find(prefix) == 0) {
           std::string orig_is = gadget_is.substr(prefix.length());
-          if (info_per_player[non_res].count(orig_is) > 0) {
+          if (info_per_player[res].count(orig_is) > 0) {
             combined->SetStatePolicy(orig_is, ap);
           }
         }

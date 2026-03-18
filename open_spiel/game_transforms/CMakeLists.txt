@@ -17,6 +17,8 @@ add_library (game_transforms OBJECT
   max_margin_gadget.h
   resolving_gadget.cc
   resolving_gadget.h
+  ses_gadget.cc
+  ses_gadget.h
   subgame_utils.cc
   subgame_utils.h
   start_at.cc
@@ -99,3 +101,9 @@ add_executable(continual_resolving_test
   ${OPEN_SPIEL_OBJECTS}
   $<TARGET_OBJECTS:tests>)
 add_test(continual_resolving_test continual_resolving_test)
+
+add_executable(ses_gadget_test
+  ses_gadget_test.cc
+  ${OPEN_SPIEL_OBJECTS}
+  $<TARGET_OBJECTS:tests>)
+add_test(ses_gadget_test ses_gadget_test)

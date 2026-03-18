@@ -25,6 +25,7 @@
 #include "open_spiel/game_transforms/max_margin_gadget.h"
 #include "open_spiel/game_transforms/matrix_valued_states.h"
 #include "open_spiel/game_transforms/resolving_gadget.h"
+#include "open_spiel/game_transforms/ses_gadget.h"
 #include "open_spiel/game_transforms/subgame_utils.h"
 #include "open_spiel/game_transforms/unsafe_subgame.h"
 #include "open_spiel/policy.h"
@@ -440,26 +441,87 @@ std::shared_ptr<TabularPolicy> ResolveSubgames(
           }
         }
       }
-    } else {
-      // With gadget: solve per-player
+    } else if (config.gadget == GadgetType::kSES) {
+      // SES gadget: solve per-player using SES gadget
+      // SES requires an opponent model for computing model reach p̂(I)
+      SPIEL_CHECK_TRUE(config.opponent_model != nullptr);
       for (int non_res = 0; non_res < 2; ++non_res) {
         int res = 1 - non_res;
         for (const auto& [pub_obs, roots] : decomp.grouped_subgames) {
           auto info_per_player = CollectSubgameInfoStatesPerPlayer(roots);
+
+          // Build SES roots: info_state_string = NON-resolving player's IS,
+          // reach_prob = resolving player's reach (π_{-nonres})
+          auto ses_roots =
+              BuildSubgameRoots(roots, non_res, decomp.reach_probs[res]);
+          if (ses_roots.empty()) continue;
+
+          // Compute model info set reach: aggregate non-resolving player's
+          // reach under the model, grouped by non-resolving info state
+          std::vector<const State*> root_ptrs;
+          for (const auto& root : roots) root_ptrs.push_back(root.get());
+          auto model_reach = ComputeReachProbabilities(
+              *decomp.game, *config.opponent_model, non_res, root_ptrs);
+
+          std::unordered_map<std::string, double> model_info_set_reach;
+          for (const auto& root : roots) {
+            std::string non_res_is = root->InformationStateString(non_res);
+            auto it = model_reach.find(root->HistoryString());
+            if (it != model_reach.end()) {
+              model_info_set_reach[non_res_is] += it->second;
+            }
+          }
+
+          // CFVs for the non-resolving player (keyed by non-resolving IS)
+          auto ses_game = CreateSESGadgetGame(
+              decomp.game, std::move(ses_roots), res, decomp.cfvs[non_res],
+              config.alpha, model_info_set_reach);
+
+          algorithms::CFRSolverBase solver(*ses_game, true, true, true);
+          for (int i = 0; i < config.cfr_iterations; ++i) {
+            solver.EvaluateAndUpdatePolicy();
+          }
+
+          // In SES, extract the RESOLVING player's strategy (they only act
+          // in the subgame). The non-resolving player has artificial info set
+          // choice actions that distort their strategy.
+          const std::string prefix = "ses_F:subgame:";
+          TabularPolicy policy = solver.TabularAveragePolicy();
+          for (const auto& [sub_is, ap] : policy.PolicyTable()) {
+            if (sub_is.compare(0, prefix.length(), prefix) == 0) {
+              std::string orig = sub_is.substr(prefix.length());
+              if (info_per_player[res].count(orig) > 0) {
+                combined->SetStatePolicy(orig, ap);
+              }
+            }
+          }
+        }
+      }
+    } else {
+      // With gadget (kResolving or kMaxMargin): solve per-player
+      for (int res = 0; res < 2; ++res) {
+        int non_res = 1 - res;
+        for (const auto& [pub_obs, roots] : decomp.grouped_subgames) {
+          auto info_per_player = CollectSubgameInfoStatesPerPlayer(roots);
+          // Roots grouped by non-resolving (adversary) player's info states,
+          // with resolving player's reach probabilities
           auto gadget_roots =
-              BuildSubgameRoots(roots, res, decomp.reach_probs[non_res]);
+              BuildSubgameRoots(roots, non_res, decomp.reach_probs[res]);
           if (gadget_roots.empty()) continue;
 
           std::shared_ptr<const Game> gadget_game;
           std::string prefix;
 
+          // adversary_player = non_res (has artificial actions)
           if (config.gadget == GadgetType::kResolving) {
             gadget_game = CreateGadgetGame(
-                decomp.game, std::move(gadget_roots), res, decomp.cfvs[res]);
+                decomp.game, std::move(gadget_roots), non_res,
+                decomp.cfvs[non_res]);
             prefix = "gadget_F:subgame:";
           } else {  // kMaxMargin
             gadget_game = CreateMaxMarginGadgetGame(
-                decomp.game, std::move(gadget_roots), res, decomp.cfvs[res]);
+                decomp.game, std::move(gadget_roots), non_res,
+                decomp.cfvs[non_res]);
             prefix = "mm_F:subgame:";
           }
 
@@ -468,11 +530,12 @@ std::shared_ptr<TabularPolicy> ResolveSubgames(
             solver.EvaluateAndUpdatePolicy();
           }
 
+          // Extract the resolving player's strategy
           TabularPolicy policy = solver.TabularAveragePolicy();
           for (const auto& [sub_is, ap] : policy.PolicyTable()) {
             if (sub_is.compare(0, prefix.length(), prefix) == 0) {
               std::string orig = sub_is.substr(prefix.length());
-              if (info_per_player[non_res].count(orig) > 0) {
+              if (info_per_player[res].count(orig) > 0) {
                 combined->SetStatePolicy(orig, ap);
               }
             }
@@ -525,18 +588,19 @@ std::shared_ptr<TabularPolicy> ResolveSubgames(
         }
       } else {
         // Gadget cases (kResolving or kMaxMargin).
-        // The resolving player has artificial T/F (or info-set choice) actions
-        // that distort their subgame strategy. So we must use two gadgets:
-        //   1. Gadget with res=opponent: solve with RNR → extract target's
-        //      strategy (target is non-resolving, strategy is undistorted)
-        //   2. Gadget with res=target: solve with CFR → extract opponent's
-        //      strategy (opponent is non-resolving, strategy is undistorted)
+        // The non-resolving (adversary) player has artificial T/F (or info-set
+        // choice) actions that distort their subgame strategy. So we must use
+        // two gadgets:
+        //   1. Gadget with adversary=opponent: solve with RNR → extract target's
+        //      strategy (target is resolving, strategy is undistorted)
+        //   2. Gadget with adversary=target: solve with CFR → extract opponent's
+        //      strategy (opponent is resolving, strategy is undistorted)
 
         // --- Gadget 1: target player's strategy via RNR ---
         {
-          int res = opponent;
+          int non_res = opponent;  // opponent is the adversary
           auto gadget_roots =
-              BuildSubgameRoots(roots, res, decomp.reach_probs[target]);
+              BuildSubgameRoots(roots, non_res, decomp.reach_probs[target]);
           if (gadget_roots.empty()) continue;
 
           std::shared_ptr<const Game> gadget_game;
@@ -544,14 +608,17 @@ std::shared_ptr<TabularPolicy> ResolveSubgames(
           int follow_action = -1;
           int num_choice_actions = 0;
 
+          // adversary_player = non_res = opponent
           if (config.gadget == GadgetType::kResolving) {
             gadget_game = CreateGadgetGame(
-                decomp.game, std::move(gadget_roots), res, decomp.cfvs[res]);
+                decomp.game, std::move(gadget_roots), non_res,
+                decomp.cfvs[non_res]);
             prefix = "gadget_F:subgame:";
             follow_action = GadgetGame::kFollowAction;
           } else {  // kMaxMargin
             auto mm_game = CreateMaxMarginGadgetGame(
-                decomp.game, std::move(gadget_roots), res, decomp.cfvs[res]);
+                decomp.game, std::move(gadget_roots), non_res,
+                decomp.cfvs[non_res]);
             num_choice_actions = mm_game->NumInfoSets();
             gadget_game = mm_game;
             prefix = "mm_F:subgame:";
@@ -565,7 +632,7 @@ std::shared_ptr<TabularPolicy> ResolveSubgames(
             solver.EvaluateAndUpdatePolicy();
           }
 
-          // Extract only target player's strategy (non-resolving).
+          // Extract target player's strategy (resolving).
           TabularPolicy policy = solver.TabularAveragePolicy();
           for (const auto& [sub_is, ap] : policy.PolicyTable()) {
             if (sub_is.compare(0, prefix.length(), prefix) == 0) {
@@ -579,21 +646,24 @@ std::shared_ptr<TabularPolicy> ResolveSubgames(
 
         // --- Gadget 2: opponent's strategy via CFR ---
         {
-          int res = target;
+          int non_res = target;  // target is the adversary
           auto gadget_roots =
-              BuildSubgameRoots(roots, res, decomp.reach_probs[opponent]);
+              BuildSubgameRoots(roots, non_res, decomp.reach_probs[opponent]);
           if (gadget_roots.empty()) continue;
 
           std::shared_ptr<const Game> gadget_game;
           std::string prefix;
 
+          // adversary_player = non_res = target
           if (config.gadget == GadgetType::kResolving) {
             gadget_game = CreateGadgetGame(
-                decomp.game, std::move(gadget_roots), res, decomp.cfvs[res]);
+                decomp.game, std::move(gadget_roots), non_res,
+                decomp.cfvs[non_res]);
             prefix = "gadget_F:subgame:";
           } else {  // kMaxMargin
             gadget_game = CreateMaxMarginGadgetGame(
-                decomp.game, std::move(gadget_roots), res, decomp.cfvs[res]);
+                decomp.game, std::move(gadget_roots), non_res,
+                decomp.cfvs[non_res]);
             prefix = "mm_F:subgame:";
           }
 
@@ -602,7 +672,7 @@ std::shared_ptr<TabularPolicy> ResolveSubgames(
             cfr_solver.EvaluateAndUpdatePolicy();
           }
 
-          // Extract only opponent's strategy (non-resolving).
+          // Extract opponent's strategy (resolving).
           TabularPolicy policy = cfr_solver.TabularAveragePolicy();
           for (const auto& [sub_is, ap] : policy.PolicyTable()) {
             if (sub_is.compare(0, prefix.length(), prefix) == 0) {

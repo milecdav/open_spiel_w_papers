@@ -180,7 +180,7 @@ std::unordered_map<std::string, ActionsAndProbs> PrecomputeModelActionIndices(
 // ============================================================================
 
 enum class SolverType { kCFR, kRNR };
-enum class GadgetType { kNone, kResolving, kMaxMargin };
+enum class GadgetType { kNone, kResolving, kMaxMargin, kSES };
 
 struct ResolvingConfig {
   SolverType solver = SolverType::kCFR;
@@ -189,6 +189,7 @@ struct ResolvingConfig {
   double p = 0.5;                          // RNR restriction parameter
   int target_player = 0;                   // Who we optimize for in RNR
   int cfr_iterations = 500;
+  double alpha = 0.5;  // SES exploitation level [0,1] (only used with kSES)
 };
 
 // ============================================================================

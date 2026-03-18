@@ -56,7 +56,9 @@ void TestMaxMarginConstruction() {
   auto mm = CreateMaxMarginGadgetGame(game, std::move(roots), 1, cfvs);
 
   SPIEL_CHECK_EQ(mm->NumPlayers(), 2);
-  SPIEL_CHECK_EQ(mm->ResolvingPlayer(), 1);
+  // adversary_player=1 → ResolvingPlayer=0, NonResolvingPlayer=1
+  SPIEL_CHECK_EQ(mm->NonResolvingPlayer(), 1);
+  SPIEL_CHECK_EQ(mm->ResolvingPlayer(), 0);
   SPIEL_CHECK_GT(mm->NumInfoSets(), 0);
 
   std::cout << "  " << mm->NumSubgameRoots() << " roots, "
@@ -79,9 +81,9 @@ void TestMaxMarginStateTransitions() {
   auto mm = CreateMaxMarginGadgetGame(
       game, BuildSubgameRoots(states, 1, reaches), 1, cfvs);
 
-  // Phase 1: InfoSetChoice — resolving player picks info set
+  // Phase 1: InfoSetChoice — non-resolving (adversary) player picks info set
   auto state = mm->NewInitialState();
-  SPIEL_CHECK_EQ(state->CurrentPlayer(), 1);
+  SPIEL_CHECK_EQ(state->CurrentPlayer(), mm->NonResolvingPlayer());
   SPIEL_CHECK_EQ(static_cast<int>(state->LegalActions().size()),
                  mm->NumInfoSets());
 

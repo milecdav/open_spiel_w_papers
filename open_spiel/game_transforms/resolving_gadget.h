@@ -31,34 +31,38 @@
 // (Burch, Johanson, Bowling 2014, arXiv:1303.4441)
 //
 // The gadget allows safe subgame re-solving while maintaining exploitability
-// guarantees. At each root state of the subgame, the "resolving player"
-// (opponent whose counterfactual values we want to preserve) gets a choice:
+// guarantees. At each root state of the subgame, the "non-resolving player"
+// (adversary whose counterfactual values we want to preserve) gets a choice:
 //   - T (terminate): receive the original counterfactual value
 //   - F (follow): continue playing in the actual subgame
 //
 // This guarantees that the re-solved strategy is no more exploitable than
 // the original strategy.
 //
+// Terminology:
+//   - Non-resolving player (adversary): has artificial T/F actions
+//   - Resolving player: strategy is extracted/refined in the subgame
+//
 // Key inputs:
 // - subgame_roots: States at the root of the subgame (e.g., start of round 2)
-// - resolving_player: The player whose CF values we preserve (opponent)
+// - adversary_player: The non-resolving player with artificial T/F actions
 // - counterfactual_values: Map from info set strings to CF values
-// - reach_probabilities: Map from state to reach prob of non-resolving player
+// - reach_probabilities: Map from state to reach prob of resolving player
 //
 // Construction (from paper Figure 2):
-// 1. Initial chance node distributes to root states with prob π_{-res}(r)/k
-// 2. At each root r̃, resolving_player chooses F or T
-// 3. T -> terminal with u(T) = k * v^R(I(r)) / Σ_{h∈I(r)} π_{-res}(h)
+// 1. Initial chance node distributes to root states with prob π_{res}(r)/k
+// 2. At each root r̃, adversary_player chooses F or T
+// 3. T -> terminal with u(T) = k * v^R(I(r)) / Σ_{h∈I(r)} π_{res}(h)
 // 4. F -> continue to subgame, utilities scaled by k
 //
 // Usage:
 //   // After solving trunk, extract counterfactual values and reach probs
 //   auto gadget = std::make_shared<GadgetGame>(
 //       subgame_roots,           // States at subgame entry
-//       resolving_player,        // Player 0 or 1
+//       adversary_player,        // Player 0 or 1 (non-resolving)
 //       counterfactual_values,   // From trunk solution
 //       reach_probabilities);    // From trunk solution
-//   // Solve the gadget game to get a safe strategy for the other player
+//   // Solve the gadget game to get a safe strategy for the resolving player
 
 namespace open_spiel {
 
@@ -75,12 +79,12 @@ class GadgetGame : public WrappedGame {
   // Parameters:
   //   game: The original game (for type info and state cloning)
   //   subgame_roots: Vector of root states with their info sets and reach probs
-  //   resolving_player: Player whose CF values we preserve (0 or 1)
-  //   counterfactual_values: Map from resolving player's info set string
+  //   adversary_player: Non-resolving player with artificial T/F actions (0 or 1)
+  //   counterfactual_values: Map from adversary player's info set string
   //                          to their counterfactual best response value
   GadgetGame(std::shared_ptr<const Game> game,
              std::vector<SubgameRoot> subgame_roots,
-             Player resolving_player,
+             Player adversary_player,
              std::unordered_map<std::string, double> counterfactual_values);
 
   std::unique_ptr<State> NewInitialState() const override;
@@ -88,8 +92,10 @@ class GadgetGame : public WrappedGame {
   int MaxGameLength() const override;
 
   // Access to configuration
-  Player ResolvingPlayer() const { return resolving_player_; }
-  Player NonResolvingPlayer() const { return 1 - resolving_player_; }
+  // ResolvingPlayer: the player whose strategy is extracted/refined
+  Player ResolvingPlayer() const { return 1 - adversary_player_; }
+  // NonResolvingPlayer: the adversary with artificial T/F actions
+  Player NonResolvingPlayer() const { return adversary_player_; }
   int NumSubgameRoots() const { return subgame_roots_.size(); }
 
   // Get the normalization constant k
@@ -118,7 +124,7 @@ class GadgetGame : public WrappedGame {
   void ComputeTerminatePayoffs();
 
   std::vector<SubgameRoot> subgame_roots_;
-  Player resolving_player_;
+  Player adversary_player_;  // Non-resolving player with artificial T/F actions
   std::unordered_map<std::string, double> counterfactual_values_;
 
   // Normalization constant k = Σ_r π_{-res}(r)
@@ -137,7 +143,7 @@ class GadgetState : public WrappedState {
   // Phase tracking for the gadget state machine
   enum class Phase {
     kChance,       // Initial chance node selecting root state
-    kGadgetChoice, // Resolving player choosing T or F
+    kGadgetChoice, // Non-resolving (adversary) player choosing T or F
     kSubgame,      // Playing the actual subgame (after F)
     kTerminal      // Terminal state (after T or subgame ends)
   };
@@ -171,21 +177,22 @@ class GadgetState : public WrappedState {
 
   Phase phase_;
   int selected_root_idx_;    // Which root state was selected by chance
-  bool chose_terminate_;      // Whether resolving player chose T
+  bool chose_terminate_;      // Whether non-resolving player chose T
   std::string root_info_state_; // Info state string at the selected root
 };
 
 // Factory function to create a gadget game
+// adversary_player: the non-resolving player with artificial T/F actions
 std::shared_ptr<const GadgetGame> CreateGadgetGame(
     std::shared_ptr<const Game> game,
     std::vector<SubgameRoot> subgame_roots,
-    Player resolving_player,
+    Player adversary_player,
     std::unordered_map<std::string, double> counterfactual_values);
 
 // Re-solve all subgames using the resolving gadget.
 // Copies trunk policy from trunk_policy, then for each player as
-// non-resolving, builds gadgets per subgame group, runs CFR, and
-// extracts the non-resolving player's strategies.
+// resolving, builds gadgets per subgame group, runs CFR, and
+// extracts the resolving player's strategies.
 // Returns a combined policy covering both trunk and all subgames.
 std::shared_ptr<TabularPolicy> ResolveWithGadget(
     const SubgameDecomposition& decomp,
