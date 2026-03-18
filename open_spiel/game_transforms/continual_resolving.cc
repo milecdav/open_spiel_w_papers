@@ -20,11 +20,13 @@
 #include <utility>
 #include <vector>
 
+#include "open_spiel/algorithms/best_response.h"
 #include "open_spiel/algorithms/cfr.h"
 #include "open_spiel/algorithms/rnr.h"
 #include "open_spiel/game_transforms/max_margin_gadget.h"
 #include "open_spiel/game_transforms/matrix_valued_states.h"
 #include "open_spiel/game_transforms/resolving_gadget.h"
+#include "open_spiel/game_transforms/ox_gadget.h"
 #include "open_spiel/game_transforms/ses_gadget.h"
 #include "open_spiel/game_transforms/subgame_utils.h"
 #include "open_spiel/game_transforms/unsafe_subgame.h"
@@ -486,6 +488,76 @@ std::shared_ptr<TabularPolicy> ResolveSubgames(
           // in the subgame). The non-resolving player has artificial info set
           // choice actions that distort their strategy.
           const std::string prefix = "ses_F:subgame:";
+          TabularPolicy policy = solver.TabularAveragePolicy();
+          for (const auto& [sub_is, ap] : policy.PolicyTable()) {
+            if (sub_is.compare(0, prefix.length(), prefix) == 0) {
+              std::string orig = sub_is.substr(prefix.length());
+              if (info_per_player[res].count(orig) > 0) {
+                combined->SetStatePolicy(orig, ap);
+              }
+            }
+          }
+        }
+      }
+    } else if (config.gadget == GadgetType::kOX) {
+      // OX gadget: solve per-player using OX gadget
+      // OX requires an opponent model for computing model reach p̂(I) and CBV
+      SPIEL_CHECK_TRUE(config.opponent_model != nullptr);
+      for (int non_res = 0; non_res < 2; ++non_res) {
+        int res = 1 - non_res;
+
+        // Compute CBV for the non-resolving player using TabularBestResponse
+        algorithms::TabularBestResponse br(*decomp.game, non_res, &trunk_policy);
+
+        for (const auto& [pub_obs, roots] : decomp.grouped_subgames) {
+          auto info_per_player = CollectSubgameInfoStatesPerPlayer(roots);
+
+          // Build OX roots: info_state_string = NON-resolving player's IS,
+          // reach_prob = resolving player's reach (π_{-nonres})
+          auto ox_roots =
+              BuildSubgameRoots(roots, non_res, decomp.reach_probs[res]);
+          if (ox_roots.empty()) continue;
+
+          // Compute CBV: CBV(I) = Σ_{h∈I} π_{-nonres}(h) × br.Value(h)
+          std::unordered_map<std::string, double> cbv_values;
+          for (const auto& root : roots) {
+            std::string info_state = root->InformationStateString(non_res);
+            std::string hist = root->HistoryString();
+            auto reach_it = decomp.reach_probs[res].find(hist);
+            double reach = (reach_it != decomp.reach_probs[res].end())
+                               ? reach_it->second
+                               : 0.0;
+            if (reach > 0) {
+              cbv_values[info_state] += reach * br.Value(hist);
+            }
+          }
+
+          // Compute model info set reach
+          std::vector<const State*> root_ptrs;
+          for (const auto& root : roots) root_ptrs.push_back(root.get());
+          auto model_reach = ComputeReachProbabilities(
+              *decomp.game, *config.opponent_model, non_res, root_ptrs);
+
+          std::unordered_map<std::string, double> model_info_set_reach;
+          for (const auto& root : roots) {
+            std::string non_res_is = root->InformationStateString(non_res);
+            auto it = model_reach.find(root->HistoryString());
+            if (it != model_reach.end()) {
+              model_info_set_reach[non_res_is] += it->second;
+            }
+          }
+
+          auto ox_game = CreateOXGadgetGame(
+              decomp.game, std::move(ox_roots), res, cbv_values,
+              config.beta, model_info_set_reach);
+
+          algorithms::CFRSolverBase solver(*ox_game, true, true, true);
+          for (int i = 0; i < config.cfr_iterations; ++i) {
+            solver.EvaluateAndUpdatePolicy();
+          }
+
+          // Extract the RESOLVING player's strategy
+          const std::string prefix = "ox_F:subgame:";
           TabularPolicy policy = solver.TabularAveragePolicy();
           for (const auto& [sub_is, ap] : policy.PolicyTable()) {
             if (sub_is.compare(0, prefix.length(), prefix) == 0) {

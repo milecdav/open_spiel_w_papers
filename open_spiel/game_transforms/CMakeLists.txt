@@ -19,6 +19,8 @@ add_library (game_transforms OBJECT
   resolving_gadget.h
   ses_gadget.cc
   ses_gadget.h
+  ox_gadget.cc
+  ox_gadget.h
   subgame_utils.cc
   subgame_utils.h
   start_at.cc
@@ -107,3 +109,9 @@ add_executable(ses_gadget_test
   ${OPEN_SPIEL_OBJECTS}
   $<TARGET_OBJECTS:tests>)
 add_test(ses_gadget_test ses_gadget_test)
+
+add_executable(ox_gadget_test
+  ox_gadget_test.cc
+  ${OPEN_SPIEL_OBJECTS}
+  $<TARGET_OBJECTS:tests>)
+add_test(ox_gadget_test ox_gadget_test)
