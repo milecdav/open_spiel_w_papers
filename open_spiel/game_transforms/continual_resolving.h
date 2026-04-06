@@ -179,8 +179,8 @@ std::unordered_map<std::string, ActionsAndProbs> PrecomputeModelActionIndices(
 // ResolvingConfig: Unified configuration for subgame resolving
 // ============================================================================
 
-enum class SolverType { kCFR, kRNR };
-enum class GadgetType { kNone, kResolving, kMaxMargin, kSES, kOX };
+enum class SolverType { kCFR, kRNR, kLP };
+enum class GadgetType { kNone, kResolving, kMaxMargin, kSES, kOX, kFullPath, kFullTrunk };
 
 struct ResolvingConfig {
   SolverType solver = SolverType::kCFR;
@@ -191,6 +191,7 @@ struct ResolvingConfig {
   int cfr_iterations = 500;
   double alpha = 0.5;  // SES exploitation level [0,1] (only used with kSES)
   double beta = 5.0;   // OX safety parameter (only used with kOX)
+  int decomp_depth = -1;  // For Full Gadget: boundary depth (player-action count)
 };
 
 // ============================================================================

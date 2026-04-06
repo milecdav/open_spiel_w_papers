@@ -88,6 +88,17 @@ SubgameDecomposition DecomposeGameAtDepth(
     const Policy& policy,
     int depth);
 
+// Strategy-agnostic decomposition: only collects boundary states and groups.
+// Does NOT compute reach probs or CFVs — those should come from a separate
+// solve (e.g., MVS LP). Use this when you need the game structure only.
+SubgameDecomposition DecomposeGameStructureAtRound(
+    std::shared_ptr<const Game> game,
+    int round);
+
+SubgameDecomposition DecomposeGameStructureAtDepth(
+    std::shared_ptr<const Game> game,
+    int depth);
+
 // Collect non-terminal states where `predicate` returns true.
 // Traverses the game tree from the initial state. When predicate(state)
 // is true, the state is collected and recursion stops (the state forms

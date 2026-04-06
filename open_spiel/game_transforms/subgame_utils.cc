@@ -420,4 +420,30 @@ SubgameDecomposition DecomposeGameAtDepth(
   return decomp;
 }
 
+SubgameDecomposition DecomposeGameStructureAtRound(
+    std::shared_ptr<const Game> game,
+    int round) {
+  SubgameDecomposition decomp;
+  decomp.game = game;
+  decomp.trunk_info_states = CollectInfoStateStringsBeforeRound(*game, round);
+  auto roots = CollectStatesAtRound(*game, round);
+  decomp.grouped_subgames =
+      GroupStatesByPublicObservation(*game, std::move(roots));
+  // reach_probs and cfvs left empty — caller fills from their own solve
+  return decomp;
+}
+
+SubgameDecomposition DecomposeGameStructureAtDepth(
+    std::shared_ptr<const Game> game,
+    int depth) {
+  SubgameDecomposition decomp;
+  decomp.game = game;
+  decomp.trunk_info_states = CollectInfoStateStringsBeforeDepth(*game, depth);
+  auto roots = CollectStatesAtDepth(*game, depth);
+  decomp.grouped_subgames =
+      GroupStatesByPublicObservation(*game, std::move(roots));
+  // reach_probs and cfvs left empty — caller fills from their own solve
+  return decomp;
+}
+
 }  // namespace open_spiel

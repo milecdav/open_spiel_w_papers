@@ -248,8 +248,9 @@ if (OPEN_SPIEL_BUILD_WITH_ORTOOLS)
   link_directories(${ORTOOLS_LIB_DIRS})
   link_libraries(${ORTOOLS_LIBS})
 
-  # Use following to link your_target_executable with OrTools libraries:
-  # target_link_libraries(your_target_executable ${ORTOOLS_LIBS})
+  # Include ortools objects in OPEN_SPIEL_OBJECTS so all executables can use LP
+  set(OPEN_SPIEL_OBJECTS ${OPEN_SPIEL_OBJECTS}
+      $<TARGET_OBJECTS:open_spiel_ortools>)
 endif()
 if (OPEN_SPIEL_BUILD_WITH_HANABI)
   set(OPEN_SPIEL_OBJECTS ${OPEN_SPIEL_OBJECTS}

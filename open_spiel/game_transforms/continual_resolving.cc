@@ -23,11 +23,15 @@
 #include "open_spiel/algorithms/best_response.h"
 #include "open_spiel/algorithms/cfr.h"
 #include "open_spiel/algorithms/rnr.h"
+#if OPEN_SPIEL_BUILD_WITH_ORTOOLS
+#include "open_spiel/algorithms/ortools/sequence_form_lp.h"
+#endif
 #include "open_spiel/game_transforms/max_margin_gadget.h"
 #include "open_spiel/game_transforms/matrix_valued_states.h"
 #include "open_spiel/game_transforms/resolving_gadget.h"
 #include "open_spiel/game_transforms/ox_gadget.h"
 #include "open_spiel/game_transforms/ses_gadget.h"
+#include "open_spiel/game_transforms/full_gadget.h"
 #include "open_spiel/game_transforms/subgame_utils.h"
 #include "open_spiel/game_transforms/unsafe_subgame.h"
 #include "open_spiel/policy.h"
@@ -64,6 +68,28 @@ TabularPolicy TabularizePolicy(const Game& game, const Policy& policy) {
   };
   traverse(*game.NewInitialState());
   return result;
+}
+
+// Solve a transformed game using either CFR or LP and return the policy.
+// For LP: uses sequence-form LP (exact). For CFR: uses alternating CFR.
+TabularPolicy SolveTransformedGame(const Game& game, SolverType solver_type,
+                                   int cfr_iterations) {
+  if (solver_type == SolverType::kLP) {
+#if OPEN_SPIEL_BUILD_WITH_ORTOOLS
+    auto [policy, value] =
+        algorithms::ortools::MakeEquilibriumPolicy(game, true);
+    return policy;
+#else
+    SpielFatalError("LP solver requested but OPEN_SPIEL_BUILD_WITH_ORTOOLS "
+                    "is not enabled. Build with OPEN_SPIEL_BUILD_WITH_ORTOOLS=ON.");
+#endif
+  }
+  // Default: CFR
+  algorithms::CFRSolverBase solver(game, true, true, true);
+  for (int i = 0; i < cfr_iterations; ++i) {
+    solver.EvaluateAndUpdatePolicy();
+  }
+  return solver.TabularAveragePolicy();
 }
 
 }  // namespace
@@ -391,6 +417,38 @@ double ComputeJointReach(
   return total;
 }
 
+// Compute expected returns at a state under a policy (recursive)
+std::vector<double> ComputeExpectedReturnsUnderPolicy(
+    const State& state, const Policy& policy) {
+  if (state.IsTerminal()) return state.Returns();
+  int np = state.NumPlayers();
+  std::vector<double> ev(np, 0.0);
+  if (state.IsChanceNode()) {
+    for (const auto& [a, p] : state.ChanceOutcomes()) {
+      auto child = state.Clone();
+      child->ApplyAction(a);
+      auto cev = ComputeExpectedReturnsUnderPolicy(*child, policy);
+      for (int i = 0; i < np; ++i) ev[i] += p * cev[i];
+    }
+  } else {
+    Player pl = state.CurrentPlayer();
+    auto ap = policy.GetStatePolicy(state, pl);
+    if (ap.empty()) {
+      auto legal = state.LegalActions();
+      double p = 1.0 / legal.size();
+      for (Action a : legal) ap.push_back({a, p});
+    }
+    for (const auto& [a, p] : ap) {
+      if (p <= 0.0) continue;
+      auto child = state.Clone();
+      child->ApplyAction(a);
+      auto cev = ComputeExpectedReturnsUnderPolicy(*child, policy);
+      for (int i = 0; i < np; ++i) ev[i] += p * cev[i];
+    }
+  }
+  return ev;
+}
+
 }  // namespace
 
 // ============================================================================
@@ -411,8 +469,8 @@ std::shared_ptr<TabularPolicy> ResolveSubgames(
     }
   }
 
-  if (config.solver == SolverType::kCFR) {
-    // Standard equilibrium solving
+  if (config.solver == SolverType::kCFR || config.solver == SolverType::kLP) {
+    // Standard equilibrium solving (CFR or LP)
     if (config.gadget == GadgetType::kNone) {
       // Unsafe: solve once, extract both players' strategies
       for (const auto& [pub_obs, roots] : decomp.grouped_subgames) {
@@ -430,12 +488,8 @@ std::shared_ptr<TabularPolicy> ResolveSubgames(
 
         auto unsafe = CreateUnsafeSubgame(
             decomp.game, std::move(subgame_roots), std::move(total_reaches));
-        algorithms::CFRSolverBase solver(*unsafe, true, true, true);
-        for (int i = 0; i < config.cfr_iterations; ++i) {
-          solver.EvaluateAndUpdatePolicy();
-        }
-
-        TabularPolicy policy = solver.TabularAveragePolicy();
+        TabularPolicy policy = SolveTransformedGame(
+            *unsafe, config.solver, config.cfr_iterations);
         const std::string prefix = "unsafe:subgame:";
         for (const auto& [sub_is, ap] : policy.PolicyTable()) {
           if (sub_is.compare(0, prefix.length(), prefix) == 0) {
@@ -479,16 +533,13 @@ std::shared_ptr<TabularPolicy> ResolveSubgames(
               decomp.game, std::move(ses_roots), res, decomp.cfvs[non_res],
               config.alpha, model_info_set_reach);
 
-          algorithms::CFRSolverBase solver(*ses_game, true, true, true);
-          for (int i = 0; i < config.cfr_iterations; ++i) {
-            solver.EvaluateAndUpdatePolicy();
-          }
+          TabularPolicy policy = SolveTransformedGame(
+              *ses_game, config.solver, config.cfr_iterations);
 
           // In SES, extract the RESOLVING player's strategy (they only act
           // in the subgame). The non-resolving player has artificial info set
           // choice actions that distort their strategy.
           const std::string prefix = "ses_F:subgame:";
-          TabularPolicy policy = solver.TabularAveragePolicy();
           for (const auto& [sub_is, ap] : policy.PolicyTable()) {
             if (sub_is.compare(0, prefix.length(), prefix) == 0) {
               std::string orig = sub_is.substr(prefix.length());
@@ -551,14 +602,71 @@ std::shared_ptr<TabularPolicy> ResolveSubgames(
               decomp.game, std::move(ox_roots), res, cbv_values,
               config.beta, model_info_set_reach);
 
-          algorithms::CFRSolverBase solver(*ox_game, true, true, true);
-          for (int i = 0; i < config.cfr_iterations; ++i) {
-            solver.EvaluateAndUpdatePolicy();
-          }
+          TabularPolicy policy = SolveTransformedGame(
+              *ox_game, config.solver, config.cfr_iterations);
 
           // Extract the RESOLVING player's strategy
           const std::string prefix = "ox_F:subgame:";
-          TabularPolicy policy = solver.TabularAveragePolicy();
+          for (const auto& [sub_is, ap] : policy.PolicyTable()) {
+            if (sub_is.compare(0, prefix.length(), prefix) == 0) {
+              std::string orig = sub_is.substr(prefix.length());
+              if (info_per_player[res].count(orig) > 0) {
+                combined->SetStatePolicy(orig, ap);
+              }
+            }
+          }
+        }
+      }
+    } else if (config.gadget == GadgetType::kFullPath ||
+               config.gadget == GadgetType::kFullTrunk) {
+      // Full Gadget: keeps actual trunk game structure for exact exploitability
+      FullGadgetGame::Mode mode = (config.gadget == GadgetType::kFullPath)
+                                      ? FullGadgetGame::Mode::kPath
+                                      : FullGadgetGame::Mode::kTrunk;
+
+      // Precompute boundary data: all boundary states and their expected values
+      std::unordered_map<std::string, std::vector<std::string>>
+          boundary_by_group;
+      std::unordered_map<std::string, std::vector<double>> boundary_values;
+
+      for (const auto& [pub_obs, roots] : decomp.grouped_subgames) {
+        for (const auto& root : roots) {
+          std::string hist = root->HistoryString();
+          boundary_by_group[pub_obs].push_back(hist);
+          boundary_values[hist] =
+              ComputeExpectedReturnsUnderPolicy(*root, trunk_policy);
+        }
+      }
+
+      auto trunk_policy_ptr = std::make_shared<TabularPolicy>(trunk_policy);
+
+      // Solve per-player (as resolving player)
+      int num_groups = decomp.grouped_subgames.size();
+      int group_idx = 0;
+      for (int res = 0; res < 2; ++res) {
+        group_idx = 0;
+        for (const auto& [pub_obs, roots] : decomp.grouped_subgames) {
+          ++group_idx;
+          auto info_per_player = CollectSubgameInfoStatesPerPlayer(roots);
+
+          // Use per-state lazy portfolio enumeration at non-target boundaries
+          auto fg = CreateFullGadgetGame(
+              decomp.game, trunk_policy_ptr, res, pub_obs,
+              boundary_by_group, boundary_values, mode,
+              /*boundary_portfolios_p0=*/{},
+              /*boundary_portfolios_p1=*/{},
+              /*enumerate_boundary_portfolios=*/true);
+
+          std::cerr << "  [Full Gadget] res=" << res
+                    << " group " << group_idx << "/" << num_groups
+                    << " (" << pub_obs << ", " << roots.size() << " roots)"
+                    << std::endl;
+
+          TabularPolicy policy = SolveTransformedGame(
+              *fg, config.solver, config.cfr_iterations);
+
+          // Extract resolving player's strategy from subgame info states
+          const std::string prefix = "full_F:subgame:";
           for (const auto& [sub_is, ap] : policy.PolicyTable()) {
             if (sub_is.compare(0, prefix.length(), prefix) == 0) {
               std::string orig = sub_is.substr(prefix.length());
@@ -597,13 +705,10 @@ std::shared_ptr<TabularPolicy> ResolveSubgames(
             prefix = "mm_F:subgame:";
           }
 
-          algorithms::CFRSolverBase solver(*gadget_game, true, true, true);
-          for (int i = 0; i < config.cfr_iterations; ++i) {
-            solver.EvaluateAndUpdatePolicy();
-          }
+          TabularPolicy policy = SolveTransformedGame(
+              *gadget_game, config.solver, config.cfr_iterations);
 
           // Extract the resolving player's strategy
-          TabularPolicy policy = solver.TabularAveragePolicy();
           for (const auto& [sub_is, ap] : policy.PolicyTable()) {
             if (sub_is.compare(0, prefix.length(), prefix) == 0) {
               std::string orig = sub_is.substr(prefix.length());
