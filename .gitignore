@@ -75,3 +75,6 @@ results/
 
 # Papers
 papers/
+
+# Log files
+logs/
