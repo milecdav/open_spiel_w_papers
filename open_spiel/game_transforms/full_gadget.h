@@ -62,12 +62,9 @@ class FullGadgetGame : public WrappedGame {
   //   target_pub_obs: public observation string of the target subgame group
   //   all_boundary_states_by_group: map from pub_obs -> vector of boundary
   //     state history strings
-  //   boundary_values: map from history string -> expected returns [v0, v1]
-  //     (fallback scalar values when no portfolios provided)
   //   mode: kPath or kTrunk
   //   boundary_portfolios_p0/p1: strategy portfolios for MVS at non-target
-  //     boundaries. If both empty and enumerate_boundary_portfolios is false,
-  //     falls back to scalar boundary_values.
+  //     boundaries when enumerate_boundary_portfolios is false.
   //   enumerate_boundary_portfolios: if true, lazily enumerate per-state
   //     subtree pure strategies at each boundary state (ignores passed
   //     portfolios). Like MVSGameWithSubtreePureStrategies.
@@ -78,8 +75,6 @@ class FullGadgetGame : public WrappedGame {
       const std::string& target_pub_obs,
       const std::unordered_map<std::string, std::vector<std::string>>&
           all_boundary_states_by_group,
-      const std::unordered_map<std::string, std::vector<double>>&
-          boundary_values,
       Mode mode,
       std::vector<std::shared_ptr<Policy>> boundary_portfolios_p0 = {},
       std::vector<std::shared_ptr<Policy>> boundary_portfolios_p1 = {},
@@ -103,7 +98,6 @@ class FullGadgetGame : public WrappedGame {
   bool IsBoundaryState(const std::string& history) const;
 
   // Get expected returns for a boundary state (target or non-target)
-  const std::vector<double>& GetBoundaryValue(const std::string& history) const;
 
   // For kPath mode: check if a trunk state can reach the target subgame
   // For kTrunk mode: always returns true
@@ -150,8 +144,6 @@ class FullGadgetGame : public WrappedGame {
   std::unordered_set<std::string> all_boundary_states_;
 
   // Pre-computed expected returns for all boundary states (fallback)
-  std::unordered_map<std::string, std::vector<double>> boundary_values_;
-
   // For kPath: set of trunk state histories that can reach the target
   // For kTrunk: empty (all trunk states are on path)
   std::unordered_set<std::string> on_path_states_;
@@ -229,7 +221,6 @@ std::shared_ptr<const FullGadgetGame> CreateFullGadgetGame(
     const std::string& target_pub_obs,
     const std::unordered_map<std::string, std::vector<std::string>>&
         all_boundary_states_by_group,
-    const std::unordered_map<std::string, std::vector<double>>& boundary_values,
     FullGadgetGame::Mode mode,
     std::vector<std::shared_ptr<Policy>> boundary_portfolios_p0 = {},
     std::vector<std::shared_ptr<Policy>> boundary_portfolios_p1 = {},

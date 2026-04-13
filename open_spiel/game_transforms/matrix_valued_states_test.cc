@@ -14,6 +14,7 @@
 
 #include "open_spiel/game_transforms/matrix_valued_states.h"
 
+#include <algorithm>
 #include <chrono>
 #include <memory>
 #include <random>
@@ -499,6 +500,91 @@ void TestPureStrategyEnumeration() {
   SPIEL_CHECK_EQ(p1_strategies.size(), expected_p1);
 }
 
+// Sorted multiset of branch widths at each of the player's infosets in the
+// continuation (labels ignored). Two subtrees with the same signature have the
+// same number of global pure strategies as ∏ signature_i.
+std::vector<int> SubtreeActionCountSignature(const SubtreeInfostates& infostates) {
+  std::vector<int> sig;
+  sig.reserve(infostates.infostates.size());
+  for (const auto& is : infostates.infostates) {
+    sig.push_back(static_cast<int>(infostates.legal_actions.at(is).size()));
+  }
+  std::sort(sig.begin(), sig.end());
+  return sig;
+}
+
+// Full Gadget with enumerate_boundary_portfolios=true builds MVS matrices
+// separately at each boundary *history*. For a sane public-state abstraction,
+// every root in a kPublicStateObsType group should expose the same continuation
+// "shape" (same multiset of action counts per infoset) and thus the same
+// portfolio sizes; otherwise portfolio indices mean different things at
+// different histories that share a public observation.
+void TestPureStrategyContinuationConsistentAcrossPublicObservation() {
+  std::cout << "TestPureStrategyContinuationConsistentAcrossPublicObservation"
+            << std::endl;
+
+  auto game = LoadGame("leduc_poker");
+  std::vector<std::unique_ptr<State>> roots = CollectStatesAtRound(*game, 3);
+  auto grouped = GroupStatesByPublicObservation(*game, std::move(roots));
+
+  int groups_checked = 0;
+  for (const auto& [pub_obs, group_roots] : grouped) {
+    (void)pub_obs;
+    if (group_roots.size() <= 1) continue;
+    ++groups_checked;
+
+    std::vector<int> ref_p0_sig;
+    std::vector<int> ref_p1_sig;
+    int ref_n_p0 = -1;
+    int ref_n_p1 = -1;
+    size_t ref_is0 = 0;
+    size_t ref_is1 = 0;
+
+    for (size_t ri = 0; ri < group_roots.size(); ++ri) {
+      const State& r = *group_roots[ri];
+      SubtreeInfostates p0_is = CollectSubtreeInfostates(r, 0);
+      SubtreeInfostates p1_is = CollectSubtreeInfostates(r, 1);
+
+      auto p0_strats = EnumeratePureStrategies(p0_is);
+      auto p1_strats = EnumeratePureStrategies(p1_is);
+
+      int prod_p0 = 1;
+      for (const auto& is : p0_is.infostates) {
+        prod_p0 *= static_cast<int>(p0_is.legal_actions.at(is).size());
+      }
+      int prod_p1 = 1;
+      for (const auto& is : p1_is.infostates) {
+        prod_p1 *= static_cast<int>(p1_is.legal_actions.at(is).size());
+      }
+      SPIEL_CHECK_EQ(static_cast<int>(p0_strats.size()), prod_p0);
+      SPIEL_CHECK_EQ(static_cast<int>(p1_strats.size()), prod_p1);
+
+      std::vector<int> sig0 = SubtreeActionCountSignature(p0_is);
+      std::vector<int> sig1 = SubtreeActionCountSignature(p1_is);
+
+      if (ri == 0) {
+        ref_p0_sig = std::move(sig0);
+        ref_p1_sig = std::move(sig1);
+        ref_n_p0 = static_cast<int>(p0_strats.size());
+        ref_n_p1 = static_cast<int>(p1_strats.size());
+        ref_is0 = p0_is.infostates.size();
+        ref_is1 = p1_is.infostates.size();
+      } else {
+        SPIEL_CHECK_EQ(sig0, ref_p0_sig);
+        SPIEL_CHECK_EQ(sig1, ref_p1_sig);
+        SPIEL_CHECK_EQ(static_cast<int>(p0_strats.size()), ref_n_p0);
+        SPIEL_CHECK_EQ(static_cast<int>(p1_strats.size()), ref_n_p1);
+        SPIEL_CHECK_EQ(p0_is.infostates.size(), ref_is0);
+        SPIEL_CHECK_EQ(p1_is.infostates.size(), ref_is1);
+      }
+    }
+  }
+
+  SPIEL_CHECK_GT(groups_checked, 0);
+  std::cout << "  Checked " << groups_checked
+            << " Leduc public-obs groups with multiple round-3 roots" << std::endl;
+}
+
 // Test that pure strategies can be used as policies
 void TestPureStrategyAsPolicy() {
   std::cout << "TestPureStrategyAsPolicy" << std::endl;
@@ -616,30 +702,25 @@ void TestMVSValueWithAllPureStrategies() {
     }
   }
 
-  // Run CFR on the MVS game to find the value
-  algorithms::CFRSolverBase solver(*mvs_game,
-                                    /*alternating_updates=*/true,
-                                    /*linear_averaging=*/true,
-                                    /*regret_matching_plus=*/true);
-
-  for (int i = 0; i < 1000; ++i) {
-    solver.EvaluateAndUpdatePolicy();
+  // Note: portfolios above are built for this specific subtree state, not all
+  // depth-limited states reachable from the initial state of mvs_game.
+  // Running full-game CFR here can query out-of-subtree infosets in
+  // SubtreePureStrategy by construction. We only validate local matrix
+  // consistency for this chosen subtree.
+  double min_u0 = 1e9, max_u0 = -1e9;
+  for (size_t i = 0; i < p0_portfolio.size(); ++i) {
+    for (size_t j = 0; j < p1_portfolio.size(); ++j) {
+      std::vector<const Policy*> policies = {p0_portfolio[i].get(),
+                                             p1_portfolio[j].get()};
+      auto returns = algorithms::ExpectedReturns(*state, policies, -1, false);
+      min_u0 = std::min(min_u0, returns[0]);
+      max_u0 = std::max(max_u0, returns[0]);
+      SPIEL_CHECK_FLOAT_EQ(returns[0] + returns[1], 0.0);
+    }
   }
-
-  auto average_policy = solver.AveragePolicy();
-  auto mvs_value = algorithms::ExpectedReturns(
-      *mvs_game->NewInitialState(), *average_policy, -1, true);
-
-  std::cout << "MVS game value (CFR 1000 iters): [" << mvs_value[0] << ", "
-            << mvs_value[1] << "]" << std::endl;
-
-  // Verify the MVS game is solvable and produces reasonable values.
-  SPIEL_CHECK_GE(mvs_value[0], game->MinUtility());
-  SPIEL_CHECK_LE(mvs_value[0], game->MaxUtility());
-  SPIEL_CHECK_FLOAT_EQ(mvs_value[0] + mvs_value[1], 0.0);  // Zero-sum
-
-  std::cout << "MVS value verification passed (reasonable bounds, zero-sum)"
-            << std::endl;
+  SPIEL_CHECK_GE(min_u0, game->MinUtility());
+  SPIEL_CHECK_LE(max_u0, game->MaxUtility());
+  std::cout << "MVS local subtree matrix verification passed" << std::endl;
 }
 
 // Test that MVS transformation preserves game value for the full game
@@ -1337,6 +1418,7 @@ int main(int argc, char** argv) {
 
   // Pure strategy enumeration tests
   open_spiel::TestPureStrategyEnumeration();
+  open_spiel::TestPureStrategyContinuationConsistentAcrossPublicObservation();
   open_spiel::TestPureStrategyAsPolicy();
 
   // Comprehensive MVS value verification

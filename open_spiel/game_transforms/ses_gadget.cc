@@ -131,13 +131,10 @@ void SESGadgetGame::ComputeInfoSetData() {
     }
   }
 
-  // Build normalized exploit outcomes. If total is 0, use uniform.
+  // Build normalized exploit outcomes. Zero total model reach indicates an
+  // invalid/empty model policy projection and should fail fast.
   if (total_model_reach <= 0.0) {
-    // Uniform fallback
-    double prob = 1.0 / info_set_list_.size();
-    for (int i = 0; i < static_cast<int>(info_set_list_.size()); ++i) {
-      exploit_chance_outcomes_.push_back({i, prob});
-    }
+    SpielFatalError("SES gadget: total_model_reach <= 0 while building outcomes");
   } else {
     for (int i = 0; i < static_cast<int>(info_set_list_.size()); ++i) {
       const auto& info_state = info_set_list_[i];

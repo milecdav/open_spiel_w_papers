@@ -123,3 +123,8 @@ add_executable(full_gadget_test
   ${OPEN_SPIEL_OBJECTS}
   $<TARGET_OBJECTS:tests>)
 add_test(full_gadget_test full_gadget_test)
+
+add_executable(full_gadget_experiment
+  full_gadget_experiment.cc
+  ${OPEN_SPIEL_OBJECTS}
+  $<TARGET_OBJECTS:tests>)

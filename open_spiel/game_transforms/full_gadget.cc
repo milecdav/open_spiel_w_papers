@@ -73,7 +73,6 @@ FullGadgetGame::FullGadgetGame(
     const std::string& target_pub_obs,
     const std::unordered_map<std::string, std::vector<std::string>>&
         all_boundary_states_by_group,
-    const std::unordered_map<std::string, std::vector<double>>& boundary_values,
     Mode mode,
     std::vector<std::shared_ptr<Policy>> boundary_portfolios_p0,
     std::vector<std::shared_ptr<Policy>> boundary_portfolios_p1,
@@ -83,7 +82,6 @@ FullGadgetGame::FullGadgetGame(
       resolving_player_(resolving_player),
       target_pub_obs_(target_pub_obs),
       mode_(mode),
-      boundary_values_(boundary_values),
       boundary_portfolios_p0_(std::move(boundary_portfolios_p0)),
       boundary_portfolios_p1_(std::move(boundary_portfolios_p1)),
       enumerate_boundary_portfolios_(enumerate_boundary_portfolios) {
@@ -119,15 +117,6 @@ bool FullGadgetGame::IsTargetBoundaryState(const std::string& history) const {
 
 bool FullGadgetGame::IsBoundaryState(const std::string& history) const {
   return all_boundary_states_.count(history) > 0;
-}
-
-const std::vector<double>& FullGadgetGame::GetBoundaryValue(
-    const std::string& history) const {
-  auto it = boundary_values_.find(history);
-  if (it != boundary_values_.end()) {
-    return it->second;
-  }
-  SpielFatalError("Boundary value not found for history: " + history);
 }
 
 bool FullGadgetGame::IsOnPath(const std::string& history) const {
@@ -357,10 +346,14 @@ void FullGadgetState::CheckAndTransition() {
     }
     if (fg_game->IsBoundaryState(hist)) {
       if (fg_game->UseMVSBoundaries()) {
-        phase_ = Phase::kBoundaryP0Select;
+        phase_ = (fg_game->ResolvingPlayer() == 0)
+                     ? Phase::kBoundaryP0Select
+                     : Phase::kBoundaryP1Select;
       } else {
         phase_ = Phase::kTerminal;
-        terminal_returns_ = fg_game->GetBoundaryValue(hist);
+        SpielFatalError(
+            "FullGadget requires portfolio-based non-target boundaries. "
+            "Provide boundary portfolios or enable enumerate_boundary_portfolios.");
       }
       return;
     }
@@ -574,16 +567,27 @@ void FullGadgetState::DoApplyAction(Action action_id) {
   if (phase_ == Phase::kBoundaryP0Select) {
     EnsureBoundaryPortfoliosComputed();
     boundary_p0_choice_ = action_id;
-    phase_ = Phase::kBoundaryP1Select;
+    if (boundary_p1_choice_ == kInvalidAction) {
+      phase_ = Phase::kBoundaryP1Select;
+    } else {
+      phase_ = Phase::kTerminal;
+      terminal_returns_ = fg_game->GetBoundaryPayoff(
+          *state_, boundary_p0_choice_, boundary_p1_choice_,
+          boundary_portfolio_p0_, boundary_portfolio_p1_);
+    }
     return;
   }
   if (phase_ == Phase::kBoundaryP1Select) {
     EnsureBoundaryPortfoliosComputed();
     boundary_p1_choice_ = action_id;
-    phase_ = Phase::kTerminal;
-    terminal_returns_ = fg_game->GetBoundaryPayoff(
-        *state_, boundary_p0_choice_, boundary_p1_choice_,
-        boundary_portfolio_p0_, boundary_portfolio_p1_);
+    if (boundary_p0_choice_ == kInvalidAction) {
+      phase_ = Phase::kBoundaryP0Select;
+    } else {
+      phase_ = Phase::kTerminal;
+      terminal_returns_ = fg_game->GetBoundaryPayoff(
+          *state_, boundary_p0_choice_, boundary_p1_choice_,
+          boundary_portfolio_p0_, boundary_portfolio_p1_);
+    }
     return;
   }
 
@@ -605,14 +609,13 @@ std::shared_ptr<const FullGadgetGame> CreateFullGadgetGame(
     const std::string& target_pub_obs,
     const std::unordered_map<std::string, std::vector<std::string>>&
         all_boundary_states_by_group,
-    const std::unordered_map<std::string, std::vector<double>>& boundary_values,
     FullGadgetGame::Mode mode,
     std::vector<std::shared_ptr<Policy>> boundary_portfolios_p0,
     std::vector<std::shared_ptr<Policy>> boundary_portfolios_p1,
     bool enumerate_boundary_portfolios) {
   return std::make_shared<FullGadgetGame>(
       game, std::move(trunk_policy), resolving_player, target_pub_obs,
-      all_boundary_states_by_group, boundary_values, mode,
+      all_boundary_states_by_group, mode,
       std::move(boundary_portfolios_p0), std::move(boundary_portfolios_p1),
       enumerate_boundary_portfolios);
 }

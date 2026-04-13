@@ -344,6 +344,12 @@ std::vector<std::shared_ptr<Policy>> ConvertToPortfolio(
 std::vector<std::shared_ptr<Policy>> EnumerateSubtreePureStrategies(
     const State& state, Player player);
 
+// Enumerate pure strategies and merge realization-equivalent ones:
+// strategies that differ only on infosets unreachable under their own earlier
+// choices are represented once.
+std::vector<std::shared_ptr<Policy>> EnumerateSubtreePureStrategiesReduced(
+    const State& state, Player player);
+
 // ============================================================================
 // MVS Utility Functions
 // ============================================================================

@@ -434,9 +434,7 @@ std::vector<double> ComputeExpectedReturnsUnderPolicy(
     Player pl = state.CurrentPlayer();
     auto ap = policy.GetStatePolicy(state, pl);
     if (ap.empty()) {
-      auto legal = state.LegalActions();
-      double p = 1.0 / legal.size();
-      for (Action a : legal) ap.push_back({a, p});
+      SpielFatalError("Missing policy entry in ComputeExpectedReturnsUnderPolicy");
     }
     for (const auto& [a, p] : ap) {
       if (p <= 0.0) continue;
@@ -624,17 +622,14 @@ std::shared_ptr<TabularPolicy> ResolveSubgames(
                                       ? FullGadgetGame::Mode::kPath
                                       : FullGadgetGame::Mode::kTrunk;
 
-      // Precompute boundary data: all boundary states and their expected values
+      // Precompute boundary grouping for Full Gadget
       std::unordered_map<std::string, std::vector<std::string>>
           boundary_by_group;
-      std::unordered_map<std::string, std::vector<double>> boundary_values;
 
       for (const auto& [pub_obs, roots] : decomp.grouped_subgames) {
         for (const auto& root : roots) {
           std::string hist = root->HistoryString();
           boundary_by_group[pub_obs].push_back(hist);
-          boundary_values[hist] =
-              ComputeExpectedReturnsUnderPolicy(*root, trunk_policy);
         }
       }
 
@@ -652,7 +647,7 @@ std::shared_ptr<TabularPolicy> ResolveSubgames(
           // Use per-state lazy portfolio enumeration at non-target boundaries
           auto fg = CreateFullGadgetGame(
               decomp.game, trunk_policy_ptr, res, pub_obs,
-              boundary_by_group, boundary_values, mode,
+              boundary_by_group, mode,
               /*boundary_portfolios_p0=*/{},
               /*boundary_portfolios_p1=*/{},
               /*enumerate_boundary_portfolios=*/true);
@@ -670,6 +665,11 @@ std::shared_ptr<TabularPolicy> ResolveSubgames(
           for (const auto& [sub_is, ap] : policy.PolicyTable()) {
             if (sub_is.compare(0, prefix.length(), prefix) == 0) {
               std::string orig = sub_is.substr(prefix.length());
+              // Support keys with explicit player tag: full_F:subgame:P<id>:<orig>
+              if (orig.size() > 3 && orig[0] == 'P' &&
+                  (orig[1] == '0' || orig[1] == '1') && orig[2] == ':') {
+                orig = orig.substr(3);
+              }
               if (info_per_player[res].count(orig) > 0) {
                 combined->SetStatePolicy(orig, ap);
               }

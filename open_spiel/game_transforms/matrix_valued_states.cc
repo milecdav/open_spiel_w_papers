@@ -19,6 +19,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -415,14 +416,12 @@ SubtreePureStrategy::SubtreePureStrategy(PureStrategyMap strategy, Player player
 ActionsAndProbs SubtreePureStrategy::GetStatePolicy(
     const State& state, Player player) const {
   if (player != player_) {
-    // Not our player - return uniform (shouldn't be called normally)
-    return UniformStatePolicy(state, player);
+    SpielFatalError("SubtreePureStrategy queried for wrong player");
   }
   std::string info_state = state.InformationStateString(player);
   auto it = strategy_.find(info_state);
   if (it == strategy_.end()) {
-    // Infostate not in our subtree - return uniform as fallback
-    return UniformStatePolicy(state, player);
+    SpielFatalError("SubtreePureStrategy missing infoset in subtree policy");
   }
   // Return full policy with the chosen action having prob 1.0
   // and all other legal actions having prob 0.0
@@ -469,15 +468,26 @@ void CollectInfostatesRecursive(
   } else if (state.CurrentPlayer() == player) {
     // This is our player's decision node
     std::string info_state = state.InformationStateString(player);
+    const std::vector<Action> legal = state.LegalActions();
 
     // Only add if not already seen (infostates can be reached multiple ways)
-    if (result->legal_actions.find(info_state) == result->legal_actions.end()) {
+    auto it = result->legal_actions.find(info_state);
+    if (it == result->legal_actions.end()) {
       result->infostates.push_back(info_state);
-      result->legal_actions[info_state] = state.LegalActions();
+      result->legal_actions[info_state] = legal;
+    } else {
+      // Invariant: identical infoset string must imply identical legal actions.
+      // Keep sequence equality (not just set equality) so action indexing remains
+      // stable for pure-strategy enumeration.
+      const std::vector<Action>& prev = it->second;
+      SPIEL_CHECK_EQ(prev.size(), legal.size());
+      for (int k = 0; k < static_cast<int>(prev.size()); ++k) {
+        SPIEL_CHECK_EQ(prev[k], legal[k]);
+      }
     }
 
     // Traverse all actions
-    for (Action action : state.LegalActions()) {
+    for (Action action : legal) {
       std::unique_ptr<State> child = state.Child(action);
       CollectInfostatesRecursive(*child, player, result);
     }
@@ -554,6 +564,90 @@ std::vector<std::shared_ptr<Policy>> EnumerateSubtreePureStrategies(
   std::vector<PureStrategyMap> pure_strategies =
       EnumeratePureStrategies(infostates);
   return ConvertToPortfolio(pure_strategies, player);
+}
+
+namespace {
+
+void CollectReachableInfosetsUnderPureStrategy(
+    const State& state,
+    Player player,
+    const PureStrategyMap& strategy,
+    std::unordered_set<std::string>* reachable_infosets) {
+  if (state.IsTerminal()) return;
+
+  if (state.IsChanceNode()) {
+    for (const auto& [a, p] : state.ChanceOutcomes()) {
+      auto child = state.Clone();
+      child->ApplyAction(a);
+      CollectReachableInfosetsUnderPureStrategy(
+          *child, player, strategy, reachable_infosets);
+    }
+    return;
+  }
+
+  Player cur = state.CurrentPlayer();
+  if (cur == player) {
+    std::string is = state.InformationStateString(player);
+    reachable_infosets->insert(is);
+    auto it = strategy.find(is);
+    if (it == strategy.end()) {
+      SpielFatalError("Pure strategy missing reachable infoset: " + is);
+    }
+    auto child = state.Clone();
+    child->ApplyAction(it->second);
+    CollectReachableInfosetsUnderPureStrategy(
+        *child, player, strategy, reachable_infosets);
+    return;
+  }
+
+  for (Action a : state.LegalActions()) {
+    auto child = state.Clone();
+    child->ApplyAction(a);
+    CollectReachableInfosetsUnderPureStrategy(
+        *child, player, strategy, reachable_infosets);
+  }
+}
+
+std::string BuildRealizationSignature(
+    const PureStrategyMap& strategy,
+    const std::unordered_set<std::string>& reachable_infosets) {
+  std::vector<std::string> sorted_infosets(reachable_infosets.begin(),
+                                           reachable_infosets.end());
+  std::sort(sorted_infosets.begin(), sorted_infosets.end());
+  std::string sig;
+  for (const auto& is : sorted_infosets) {
+    auto it = strategy.find(is);
+    SPIEL_CHECK_TRUE(it != strategy.end());
+    sig += is;
+    sig += "=";
+    sig += std::to_string(it->second);
+    sig += ";";
+  }
+  return sig;
+}
+
+}  // namespace
+
+std::vector<std::shared_ptr<Policy>> EnumerateSubtreePureStrategiesReduced(
+    const State& state, Player player) {
+  SubtreeInfostates infostates = CollectSubtreeInfostates(state, player);
+  std::vector<PureStrategyMap> pure_strategies =
+      EnumeratePureStrategies(infostates);
+
+  std::vector<PureStrategyMap> reduced;
+  reduced.reserve(pure_strategies.size());
+  std::unordered_set<std::string> seen_signatures;
+  for (const auto& strategy : pure_strategies) {
+    std::unordered_set<std::string> reachable_infosets;
+    CollectReachableInfosetsUnderPureStrategy(
+        state, player, strategy, &reachable_infosets);
+    std::string signature =
+        BuildRealizationSignature(strategy, reachable_infosets);
+    if (seen_signatures.insert(signature).second) {
+      reduced.push_back(strategy);
+    }
+  }
+  return ConvertToPortfolio(reduced, player);
 }
 
 // ============================================================================
