@@ -346,9 +346,7 @@ void FullGadgetState::CheckAndTransition() {
     }
     if (fg_game->IsBoundaryState(hist)) {
       if (fg_game->UseMVSBoundaries()) {
-        phase_ = (fg_game->ResolvingPlayer() == 0)
-                     ? Phase::kBoundaryP0Select
-                     : Phase::kBoundaryP1Select;
+        phase_ = Phase::kBoundaryP0Select;
       } else {
         phase_ = Phase::kTerminal;
         SpielFatalError(
@@ -469,16 +467,41 @@ std::string FullGadgetState::InformationStateString(Player player) const {
   const auto* fg_game = GetFullGadgetGame();
 
   if (phase_ == Phase::kTerminal) {
-    return absl::StrCat("full_gadget:terminal:", player);
+    // If this terminal came from MVS boundary selection, include the player's
+    // OWN choice for perfect recall (but NOT the opponent's choice).
+    if (boundary_p0_choice_ != kInvalidAction &&
+        boundary_p1_choice_ != kInvalidAction) {
+      Action own_choice = (player == 0) ? boundary_p0_choice_
+                                        : boundary_p1_choice_;
+      return absl::StrCat("full_boundary:",
+                          state_->InformationStateString(player),
+                          ":BSEL_DONE:", own_choice);
+    }
+    // Non-boundary terminal (trunk terminal or subgame terminal)
+    return absl::StrCat("full_gadget:terminal:",
+                        state_->InformationStateString(player));
   }
 
-  if (phase_ == Phase::kBoundaryP0Select ||
-      phase_ == Phase::kBoundaryP1Select) {
-    // Simultaneous game: each player sees their own info state + player-specific
-    // suffix so P1 cannot observe P0's choice
+  if (phase_ == Phase::kBoundaryP0Select) {
+    // P0 is selecting. Both players see phase 0 (selection phase).
+    // Neither player has acted yet, so IS is the same for both.
     return absl::StrCat("full_boundary:",
                         state_->InformationStateString(player),
-                        ":BSEL", player);
+                        ":BSEL0");
+  }
+  if (phase_ == Phase::kBoundaryP1Select) {
+    // P1 is selecting. P0 has already acted.
+    // P0 must remember their own action (perfect recall) -> include p0_choice
+    // P1 must NOT see P0's action (simultaneity) -> just phase suffix
+    if (player == 0) {
+      return absl::StrCat("full_boundary:",
+                          state_->InformationStateString(player),
+                          ":BSEL1:", boundary_p0_choice_);
+    } else {
+      return absl::StrCat("full_boundary:",
+                          state_->InformationStateString(player),
+                          ":BSEL1");
+    }
   }
 
   if (phase_ == Phase::kSubgame) {
@@ -512,8 +535,7 @@ std::string FullGadgetState::ToString() const {
                               state_->ToString());
       break;
     case Phase::kBoundaryP1Select:
-      result += absl::StrCat("phase=BoundaryP1Select, p0_choice=",
-                              boundary_p0_choice_, ", state=",
+      result += absl::StrCat("phase=BoundaryP1Select, state=",
                               state_->ToString());
       break;
     case Phase::kTerminal:
