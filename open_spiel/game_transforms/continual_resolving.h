@@ -115,7 +115,7 @@ class MVSOpponentPolicy : public Policy {
  public:
   // underlying: the opponent model (original game info states)
   // portfolio_probs: precomputed distribution over pure strategies at each
-  //   MVS portfolio info state (e.g. "base:MVSP_SEL1" -> [(0, p0), ...])
+  //   MVS portfolio info state (e.g. "base:MVS_SEL1" -> [(0, p0), ...])
   MVSOpponentPolicy(const Policy* underlying,
                      std::unordered_map<std::string, ActionsAndProbs>
                          portfolio_probs);

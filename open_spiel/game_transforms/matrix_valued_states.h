@@ -47,6 +47,61 @@
 
 namespace open_spiel {
 
+// ============================================================================
+// MVSPortfolioSelector — reusable portfolio selection state machine
+// ============================================================================
+//
+// Encapsulates the simultaneous portfolio selection used by MVS games:
+//   P0 selects from portfolio → P1 selects from portfolio → terminal
+// with correct information state encoding (perfect recall + simultaneity).
+//
+// This is a lightweight value type that can be embedded in any State class.
+// It does NOT own portfolios or payoff caches — those belong to the caller.
+
+class MVSPortfolioSelector {
+ public:
+  enum class Phase { kIdle, kP0Select, kP1Select, kTerminal };
+
+  MVSPortfolioSelector() = default;
+
+  // Activate the selector for portfolio selection.
+  // num_p0/num_p1 are the portfolio sizes (for LegalActions).
+  void Activate(int num_p0, int num_p1);
+
+  Phase GetPhase() const { return phase_; }
+  bool IsActive() const { return phase_ != Phase::kIdle; }
+  bool IsTerminal() const { return phase_ == Phase::kTerminal; }
+
+  // Current player: 0 for P0Select, 1 for P1Select, kTerminalPlayerId for terminal
+  Player CurrentPlayer() const;
+
+  // Legal actions: {0, 1, ..., N-1} for the selecting player
+  std::vector<Action> LegalActions() const;
+
+  std::string ActionToString(Player player, Action action_id) const;
+
+  // Apply a portfolio selection action (transitions the state machine)
+  void ApplyAction(Action action_id);
+
+  // Information state suffix for correct perfect-recall + simultaneity.
+  // The caller prepends their own context prefix.
+  // Encoding:
+  //   kP0Select:  ":MVS_SEL0" for both players
+  //   kP1Select:  ":MVS_SEL1:<p0_choice>" for P0, ":MVS_SEL1" for P1
+  //   kTerminal:  ":MVS_T:<own_choice>" (own choice only)
+  std::string InformationStateSuffix(Player player) const;
+
+  Action P0Choice() const { return p0_choice_; }
+  Action P1Choice() const { return p1_choice_; }
+
+ private:
+  Phase phase_ = Phase::kIdle;
+  int num_p0_ = 0;
+  int num_p1_ = 0;
+  Action p0_choice_ = kInvalidAction;
+  Action p1_choice_ = kInvalidAction;
+};
+
 class MVSState;
 
 class MVSGame : public WrappedGame {
@@ -133,7 +188,7 @@ class MVSState : public WrappedState {
   std::vector<std::pair<Action, double>> ChanceOutcomes() const override;
 
   // Access to phase for debugging/testing
-  Phase GetPhase() const { return phase_; }
+  Phase GetPhase() const;
   int CurrentDepth() const { return current_depth_; }
 
  protected:
@@ -145,14 +200,10 @@ class MVSState : public WrappedState {
   // Check if we're at the depth limit and should transition to portfolio selection
   bool AtDepthLimit() const;
 
-  // Count the current round (for round-based depth mode)
-  int ComputeCurrentRound() const;
-
-  Phase phase_ = Phase::kNormal;
   int current_depth_ = 0;
   int current_round_ = 0;  // For round-based depth mode
-  Action p1_choice_ = kInvalidAction;
-  Action p2_choice_ = kInvalidAction;
+  MVSPortfolioSelector mvs_selector_;
+  bool selector_activated_ = false;  // True once we've entered portfolio selection
 };
 
 // Helper function to create an MVS game with explicit portfolios
@@ -195,7 +246,7 @@ class MVSStateWithSubtreePureStrategies : public WrappedState {
   std::unique_ptr<State> Clone() const override;
   std::vector<std::pair<Action, double>> ChanceOutcomes() const override;
 
-  Phase GetPhase() const { return phase_; }
+  Phase GetPhase() const;
   int CurrentDepth() const { return current_depth_; }
 
   // Get the portfolios computed for this state (lazily computed)
@@ -205,6 +256,9 @@ class MVSStateWithSubtreePureStrategies : public WrappedState {
   // Access the underlying wrapped state (needed for payoff computation)
   const State& GetUnderlyingState() const { return *state_; }
 
+  // Access the selector (needed for payoff lookup)
+  const MVSPortfolioSelector& GetSelector() const { return mvs_selector_; }
+
  protected:
   void DoApplyAction(Action action_id) override;
 
@@ -213,11 +267,10 @@ class MVSStateWithSubtreePureStrategies : public WrappedState {
   bool AtDepthLimit() const;
   void EnsurePortfoliosComputed() const;
 
-  Phase phase_ = Phase::kNormal;
   int current_depth_ = 0;
   int current_round_ = 0;
-  Action p1_choice_ = kInvalidAction;
-  Action p2_choice_ = kInvalidAction;
+  MVSPortfolioSelector mvs_selector_;
+  bool selector_activated_ = false;
 
   // Lazily computed portfolios for this depth-limited state
   mutable std::vector<std::shared_ptr<Policy>> portfolio_p0_;

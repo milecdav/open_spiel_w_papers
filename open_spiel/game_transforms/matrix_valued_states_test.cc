@@ -144,10 +144,11 @@ void TestInformationStateCorrectness() {
   std::cout << "P1 info after P1 action: " << p1_info_after << std::endl;
   std::cout << "P2 info after P1 action: " << p2_info_after << std::endl;
 
-  // During selection, both should have the same MVS_SELECT suffix
-  SPIEL_CHECK_TRUE(p2_info_after.find(":MVS_SELECT") != std::string::npos);
-  // P2's info should NOT contain P1's choice
-  SPIEL_CHECK_TRUE(p2_info_after.find(":MVS:1") == std::string::npos);
+  // P1 (player 1) sees phase suffix but NOT P0's choice
+  SPIEL_CHECK_TRUE(p2_info_after.find(":MVS_SEL1") != std::string::npos);
+  SPIEL_CHECK_TRUE(p2_info_after.find(":MVS_SEL1:1") == std::string::npos);
+  // P0 (player 0) sees their own choice encoded
+  SPIEL_CHECK_TRUE(p1_info_after.find(":MVS_SEL1:1") != std::string::npos);
 
   // P2 selects portfolio 0
   state->ApplyAction(0);
@@ -162,9 +163,9 @@ void TestInformationStateCorrectness() {
   std::cout << "P1 terminal info: " << p1_terminal << std::endl;
   std::cout << "P2 terminal info: " << p2_terminal << std::endl;
 
-  // P1 should see their choice (1), P2 should see their choice (0)
-  SPIEL_CHECK_TRUE(p1_terminal.find(":MVS:1") != std::string::npos);
-  SPIEL_CHECK_TRUE(p2_terminal.find(":MVS:0") != std::string::npos);
+  // P0 should see their choice (1), P1 should see their choice (0)
+  SPIEL_CHECK_TRUE(p1_terminal.find(":MVS_T:1") != std::string::npos);
+  SPIEL_CHECK_TRUE(p2_terminal.find(":MVS_T:0") != std::string::npos);
 }
 
 // Test that payoff computation matches ExpectedReturns

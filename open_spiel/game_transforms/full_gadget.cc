@@ -302,8 +302,7 @@ FullGadgetState::FullGadgetState(const FullGadgetState& other)
                    other.state_ ? other.state_->Clone() : nullptr),
       phase_(other.phase_),
       terminal_returns_(other.terminal_returns_),
-      boundary_p0_choice_(other.boundary_p0_choice_),
-      boundary_p1_choice_(other.boundary_p1_choice_),
+      mvs_selector_(other.mvs_selector_),
       boundary_portfolio_p0_(other.boundary_portfolio_p0_),
       boundary_portfolio_p1_(other.boundary_portfolio_p1_),
       boundary_portfolios_computed_(other.boundary_portfolios_computed_) {
@@ -346,7 +345,10 @@ void FullGadgetState::CheckAndTransition() {
     }
     if (fg_game->IsBoundaryState(hist)) {
       if (fg_game->UseMVSBoundaries()) {
-        phase_ = Phase::kBoundaryP0Select;
+        EnsureBoundaryPortfoliosComputed();
+        mvs_selector_.Activate(boundary_portfolio_p0_.size(),
+                               boundary_portfolio_p1_.size());
+        phase_ = Phase::kBoundaryMVS;
       } else {
         phase_ = Phase::kTerminal;
         SpielFatalError(
@@ -376,53 +378,23 @@ void FullGadgetState::CheckAndTransition() {
 Player FullGadgetState::CurrentPlayer() const {
   const auto* fg_game = GetFullGadgetGame();
 
-  if (phase_ == Phase::kTerminal) {
-    return kTerminalPlayerId;
-  }
+  if (phase_ == Phase::kTerminal) return kTerminalPlayerId;
+  if (phase_ == Phase::kBoundaryMVS) return mvs_selector_.CurrentPlayer();
+  if (phase_ == Phase::kSubgame) return state_->CurrentPlayer();
 
-  if (phase_ == Phase::kBoundaryP0Select) return 0;
-  if (phase_ == Phase::kBoundaryP1Select) return 1;
-
-  if (phase_ == Phase::kSubgame) {
-    return state_->CurrentPlayer();
-  }
-
-  // In trunk phase:
-  if (state_->IsTerminal()) {
-    return kTerminalPlayerId;
-  }
-  if (state_->IsChanceNode()) {
-    return kChancePlayerId;
-  }
-  // Resolving player's decisions become chance in trunk
+  // Trunk phase:
+  if (state_->IsTerminal()) return kTerminalPlayerId;
+  if (state_->IsChanceNode()) return kChancePlayerId;
   if (state_->CurrentPlayer() == fg_game->ResolvingPlayer()) {
     return kChancePlayerId;
   }
-  // Non-resolving player acts freely
   return state_->CurrentPlayer();
 }
 
 std::vector<Action> FullGadgetState::LegalActions() const {
   if (phase_ == Phase::kTerminal) return {};
-
-  if (phase_ == Phase::kBoundaryP0Select) {
-    EnsureBoundaryPortfoliosComputed();
-    std::vector<Action> actions;
-    for (int i = 0; i < static_cast<int>(boundary_portfolio_p0_.size()); ++i)
-      actions.push_back(i);
-    return actions;
-  }
-  if (phase_ == Phase::kBoundaryP1Select) {
-    EnsureBoundaryPortfoliosComputed();
-    std::vector<Action> actions;
-    for (int i = 0; i < static_cast<int>(boundary_portfolio_p1_.size()); ++i)
-      actions.push_back(i);
-    return actions;
-  }
-
+  if (phase_ == Phase::kBoundaryMVS) return mvs_selector_.LegalActions();
   if (phase_ == Phase::kSubgame) return state_->LegalActions();
-
-  // Trunk phase
   return state_->LegalActions();
 }
 
@@ -435,12 +407,11 @@ std::vector<Action> FullGadgetState::LegalActions(Player player) const {
 
 std::string FullGadgetState::ActionToString(Player player,
                                              Action action_id) const {
+  if (phase_ == Phase::kBoundaryMVS) {
+    return mvs_selector_.ActionToString(player, action_id);
+  }
   if (phase_ == Phase::kSubgame || phase_ == Phase::kTrunk) {
     return state_->ActionToString(player, action_id);
-  }
-  if (phase_ == Phase::kBoundaryP0Select ||
-      phase_ == Phase::kBoundaryP1Select) {
-    return absl::StrCat("boundary_portfolio_", action_id);
   }
   return absl::StrCat("action_", action_id);
 }
@@ -467,41 +438,21 @@ std::string FullGadgetState::InformationStateString(Player player) const {
   const auto* fg_game = GetFullGadgetGame();
 
   if (phase_ == Phase::kTerminal) {
-    // If this terminal came from MVS boundary selection, include the player's
-    // OWN choice for perfect recall (but NOT the opponent's choice).
-    if (boundary_p0_choice_ != kInvalidAction &&
-        boundary_p1_choice_ != kInvalidAction) {
-      Action own_choice = (player == 0) ? boundary_p0_choice_
-                                        : boundary_p1_choice_;
+    // If this terminal came from MVS boundary selection, use selector's suffix
+    if (mvs_selector_.IsTerminal()) {
       return absl::StrCat("full_boundary:",
                           state_->InformationStateString(player),
-                          ":BSEL_DONE:", own_choice);
+                          mvs_selector_.InformationStateSuffix(player));
     }
     // Non-boundary terminal (trunk terminal or subgame terminal)
     return absl::StrCat("full_gadget:terminal:",
                         state_->InformationStateString(player));
   }
 
-  if (phase_ == Phase::kBoundaryP0Select) {
-    // P0 is selecting. Both players see phase 0 (selection phase).
-    // Neither player has acted yet, so IS is the same for both.
+  if (phase_ == Phase::kBoundaryMVS) {
     return absl::StrCat("full_boundary:",
                         state_->InformationStateString(player),
-                        ":BSEL0");
-  }
-  if (phase_ == Phase::kBoundaryP1Select) {
-    // P1 is selecting. P0 has already acted.
-    // P0 must remember their own action (perfect recall) -> include p0_choice
-    // P1 must NOT see P0's action (simultaneity) -> just phase suffix
-    if (player == 0) {
-      return absl::StrCat("full_boundary:",
-                          state_->InformationStateString(player),
-                          ":BSEL1:", boundary_p0_choice_);
-    } else {
-      return absl::StrCat("full_boundary:",
-                          state_->InformationStateString(player),
-                          ":BSEL1");
-    }
+                        mvs_selector_.InformationStateSuffix(player));
   }
 
   if (phase_ == Phase::kSubgame) {
@@ -530,12 +481,8 @@ std::string FullGadgetState::ToString() const {
     case Phase::kSubgame:
       result += absl::StrCat("phase=Subgame, state=", state_->ToString());
       break;
-    case Phase::kBoundaryP0Select:
-      result += absl::StrCat("phase=BoundaryP0Select, state=",
-                              state_->ToString());
-      break;
-    case Phase::kBoundaryP1Select:
-      result += absl::StrCat("phase=BoundaryP1Select, state=",
+    case Phase::kBoundaryMVS:
+      result += absl::StrCat("phase=BoundaryMVS, state=",
                               state_->ToString());
       break;
     case Phase::kTerminal:
@@ -553,23 +500,15 @@ std::unique_ptr<State> FullGadgetState::Clone() const {
 std::vector<std::pair<Action, double>> FullGadgetState::ChanceOutcomes() const {
   const auto* fg_game = GetFullGadgetGame();
 
-  if (phase_ == Phase::kBoundaryP0Select ||
-      phase_ == Phase::kBoundaryP1Select) {
-    return {};  // Player decision nodes, not chance
-  }
+  if (phase_ == Phase::kBoundaryMVS) return {};
 
   if (phase_ == Phase::kSubgame) {
-    if (state_->IsChanceNode()) {
-      return state_->ChanceOutcomes();
-    }
+    if (state_->IsChanceNode()) return state_->ChanceOutcomes();
     return {};
   }
 
   if (phase_ == Phase::kTrunk) {
-    if (state_->IsChanceNode()) {
-      return state_->ChanceOutcomes();
-    }
-    // Resolving player's turn -> return trunk policy as chance outcomes
+    if (state_->IsChanceNode()) return state_->ChanceOutcomes();
     if (state_->CurrentPlayer() == fg_game->ResolvingPlayer()) {
       return fg_game->GetTrunkPolicy(*state_);
     }
@@ -586,28 +525,12 @@ void FullGadgetState::DoApplyAction(Action action_id) {
   const auto* fg_game = GetFullGadgetGame();
 
   // Handle MVS boundary portfolio selection (don't touch underlying state)
-  if (phase_ == Phase::kBoundaryP0Select) {
-    EnsureBoundaryPortfoliosComputed();
-    boundary_p0_choice_ = action_id;
-    if (boundary_p1_choice_ == kInvalidAction) {
-      phase_ = Phase::kBoundaryP1Select;
-    } else {
+  if (phase_ == Phase::kBoundaryMVS) {
+    mvs_selector_.ApplyAction(action_id);
+    if (mvs_selector_.IsTerminal()) {
       phase_ = Phase::kTerminal;
       terminal_returns_ = fg_game->GetBoundaryPayoff(
-          *state_, boundary_p0_choice_, boundary_p1_choice_,
-          boundary_portfolio_p0_, boundary_portfolio_p1_);
-    }
-    return;
-  }
-  if (phase_ == Phase::kBoundaryP1Select) {
-    EnsureBoundaryPortfoliosComputed();
-    boundary_p1_choice_ = action_id;
-    if (boundary_p0_choice_ == kInvalidAction) {
-      phase_ = Phase::kBoundaryP0Select;
-    } else {
-      phase_ = Phase::kTerminal;
-      terminal_returns_ = fg_game->GetBoundaryPayoff(
-          *state_, boundary_p0_choice_, boundary_p1_choice_,
+          *state_, mvs_selector_.P0Choice(), mvs_selector_.P1Choice(),
           boundary_portfolio_p0_, boundary_portfolio_p1_);
     }
     return;

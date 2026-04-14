@@ -1057,9 +1057,8 @@ void TestLeducFullGadgetWithMVSTrunk() {
   // Extract normal-phase trunk keys (no portfolio / matrix suffixes).
   TabularPolicy mvs_trunk;
   for (const auto& [is, ap] : mvs_ne.PolicyTable()) {
-    if (is.find(":MVSP_") == std::string::npos &&
-        is.find(":MVS:") == std::string::npos &&
-        is.find(":MVSP:") == std::string::npos) {
+    if (is.find(":MVS_SEL") == std::string::npos &&
+        is.find(":MVS_T:") == std::string::npos) {
       mvs_trunk.SetStatePolicy(is, ap);
     }
   }
@@ -1640,9 +1639,8 @@ void TestMVSBoundaryDiagnostic() {
       int na = s.LegalActions().size();
 
       auto* fgs = dynamic_cast<FullGadgetState*>(&s);
-      bool is_boundary = fgs && (fgs->GetPhase() ==
-          FullGadgetState::Phase::kBoundaryP0Select ||
-          fgs->GetPhase() == FullGadgetState::Phase::kBoundaryP1Select);
+      bool is_boundary = fgs && fgs->GetPhase() ==
+          FullGadgetState::Phase::kBoundaryMVS;
 
       if (is_boundary) {
         total_boundary_states++;
@@ -1730,8 +1728,7 @@ void TestMVSBoundaryDiagnostic() {
               switch (fgs->GetPhase()) {
                 case FullGadgetState::Phase::kTrunk: phase_str = "trunk"; break;
                 case FullGadgetState::Phase::kSubgame: phase_str = "subgame"; break;
-                case FullGadgetState::Phase::kBoundaryP0Select: phase_str = "BP0"; break;
-                case FullGadgetState::Phase::kBoundaryP1Select: phase_str = "BP1"; break;
+                case FullGadgetState::Phase::kBoundaryMVS: phase_str = "MVS"; break;
                 case FullGadgetState::Phase::kTerminal: phase_str = "terminal"; break;
               }
             }

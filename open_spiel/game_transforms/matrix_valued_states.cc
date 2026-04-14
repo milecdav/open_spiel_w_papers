@@ -67,6 +67,89 @@ GameType ConvertType(const GameType& type) {
 }  // namespace
 
 // ============================================================================
+// MVSPortfolioSelector implementation
+// ============================================================================
+
+void MVSPortfolioSelector::Activate(int num_p0, int num_p1) {
+  SPIEL_CHECK_GT(num_p0, 0);
+  SPIEL_CHECK_GT(num_p1, 0);
+  phase_ = Phase::kP0Select;
+  num_p0_ = num_p0;
+  num_p1_ = num_p1;
+  p0_choice_ = kInvalidAction;
+  p1_choice_ = kInvalidAction;
+}
+
+Player MVSPortfolioSelector::CurrentPlayer() const {
+  switch (phase_) {
+    case Phase::kP0Select: return 0;
+    case Phase::kP1Select: return 1;
+    case Phase::kTerminal: return kTerminalPlayerId;
+    case Phase::kIdle:
+      SpielFatalError("MVSPortfolioSelector::CurrentPlayer called while idle");
+  }
+  SpielFatalError("Unknown phase");
+}
+
+std::vector<Action> MVSPortfolioSelector::LegalActions() const {
+  std::vector<Action> actions;
+  switch (phase_) {
+    case Phase::kP0Select:
+      for (int i = 0; i < num_p0_; ++i) actions.push_back(i);
+      return actions;
+    case Phase::kP1Select:
+      for (int i = 0; i < num_p1_; ++i) actions.push_back(i);
+      return actions;
+    case Phase::kTerminal:
+      return {};
+    case Phase::kIdle:
+      SpielFatalError("MVSPortfolioSelector::LegalActions called while idle");
+  }
+  SpielFatalError("Unknown phase");
+}
+
+std::string MVSPortfolioSelector::ActionToString(Player player,
+                                                  Action action_id) const {
+  return absl::StrCat("P", player, "_portfolio_", action_id);
+}
+
+void MVSPortfolioSelector::ApplyAction(Action action_id) {
+  switch (phase_) {
+    case Phase::kP0Select:
+      p0_choice_ = action_id;
+      phase_ = Phase::kP1Select;
+      break;
+    case Phase::kP1Select:
+      p1_choice_ = action_id;
+      phase_ = Phase::kTerminal;
+      break;
+    case Phase::kTerminal:
+      SpielFatalError("Cannot apply action to terminal MVS selector");
+    case Phase::kIdle:
+      SpielFatalError("Cannot apply action to idle MVS selector");
+  }
+}
+
+std::string MVSPortfolioSelector::InformationStateSuffix(Player player) const {
+  switch (phase_) {
+    case Phase::kP0Select:
+      return ":MVS_SEL0";
+    case Phase::kP1Select:
+      if (player == 0) {
+        return absl::StrCat(":MVS_SEL1:", p0_choice_);
+      }
+      return ":MVS_SEL1";
+    case Phase::kTerminal: {
+      Action own_choice = (player == 0) ? p0_choice_ : p1_choice_;
+      return absl::StrCat(":MVS_T:", own_choice);
+    }
+    case Phase::kIdle:
+      return "";
+  }
+  SpielFatalError("Unknown phase");
+}
+
+// ============================================================================
 // MVSGame implementation
 // ============================================================================
 
@@ -144,198 +227,128 @@ void MVSGame::ComputePayoffMatrix(const State& state) const {
 MVSState::MVSState(std::shared_ptr<const Game> game,
                    std::unique_ptr<State> state)
     : WrappedState(game, std::move(state)),
-      phase_(Phase::kNormal),
       current_depth_(0),
-      current_round_(0),
-      p1_choice_(kInvalidAction),
-      p2_choice_(kInvalidAction) {}
+      current_round_(0) {}
 
 MVSState::MVSState(const MVSState& other)
     : WrappedState(other),
-      phase_(other.phase_),
       current_depth_(other.current_depth_),
       current_round_(other.current_round_),
-      p1_choice_(other.p1_choice_),
-      p2_choice_(other.p2_choice_) {}
+      mvs_selector_(other.mvs_selector_),
+      selector_activated_(other.selector_activated_) {}
 
 const MVSGame* MVSState::GetMVSGame() const {
   return down_cast<const MVSGame*>(game_.get());
 }
 
 bool MVSState::AtDepthLimit() const {
-  // Don't trigger depth limit if already terminal or at a chance node
   if (state_->IsTerminal() || state_->IsChanceNode()) {
     return false;
   }
-
   const MVSGame* game = GetMVSGame();
   if (game->GetDepthMode() == MVSGame::DepthMode::kActionBased) {
     return current_depth_ >= game->DepthLimit();
   } else {
-    // Round-based: compare current round count
     return current_round_ >= game->DepthLimit();
   }
 }
 
-int MVSState::ComputeCurrentRound() const {
-  // For round-based depth mode: count completed rounds
-  // A round is completed when a chance node deals cards
-  return current_round_;
+MVSState::Phase MVSState::GetPhase() const {
+  if (!selector_activated_) {
+    if (AtDepthLimit()) return Phase::kPortfolioP1;
+    return Phase::kNormal;
+  }
+  switch (mvs_selector_.GetPhase()) {
+    case MVSPortfolioSelector::Phase::kP0Select: return Phase::kPortfolioP1;
+    case MVSPortfolioSelector::Phase::kP1Select: return Phase::kPortfolioP2;
+    case MVSPortfolioSelector::Phase::kTerminal: return Phase::kMatrixTerminal;
+    default: return Phase::kNormal;
+  }
 }
 
 Player MVSState::CurrentPlayer() const {
-  switch (phase_) {
-    case Phase::kNormal:
-      if (AtDepthLimit()) {
-        return 0;  // P1 selects first
-      }
-      return state_->CurrentPlayer();
-    case Phase::kPortfolioP1:
-      return 0;
-    case Phase::kPortfolioP2:
-      return 1;
-    case Phase::kMatrixTerminal:
-      return kTerminalPlayerId;
-  }
-  SpielFatalError("Unknown phase in MVSState::CurrentPlayer");
+  if (selector_activated_) return mvs_selector_.CurrentPlayer();
+  if (AtDepthLimit()) return 0;  // P0 selects first
+  return state_->CurrentPlayer();
 }
 
 std::vector<Action> MVSState::LegalActions() const {
-  const MVSGame* game = GetMVSGame();
-
-  switch (phase_) {
-    case Phase::kNormal:
-      if (AtDepthLimit()) {
-        // P1 portfolio selection
-        std::vector<Action> actions;
-        for (int i = 0; i < game->NumPortfoliosP1(); ++i) {
-          actions.push_back(i);
-        }
-        return actions;
-      }
-      return state_->LegalActions();
-    case Phase::kPortfolioP1: {
-      std::vector<Action> actions;
-      for (int i = 0; i < game->NumPortfoliosP1(); ++i) {
-        actions.push_back(i);
-      }
-      return actions;
-    }
-    case Phase::kPortfolioP2: {
-      std::vector<Action> actions;
-      for (int i = 0; i < game->NumPortfoliosP2(); ++i) {
-        actions.push_back(i);
-      }
-      return actions;
-    }
-    case Phase::kMatrixTerminal:
-      return {};
+  if (selector_activated_) return mvs_selector_.LegalActions();
+  if (AtDepthLimit()) {
+    const MVSGame* game = GetMVSGame();
+    std::vector<Action> actions;
+    for (int i = 0; i < game->NumPortfoliosP1(); ++i) actions.push_back(i);
+    return actions;
   }
-  SpielFatalError("Unknown phase in MVSState::LegalActions");
+  return state_->LegalActions();
 }
 
 std::vector<Action> MVSState::LegalActions(Player player) const {
-  // In a sequential game, only the current player has legal actions
-  if (player != CurrentPlayer()) {
-    return {};
-  }
+  if (player != CurrentPlayer()) return {};
   return LegalActions();
 }
 
 std::string MVSState::ActionToString(Player player, Action action_id) const {
-  switch (phase_) {
-    case Phase::kNormal:
-      if (AtDepthLimit()) {
-        return absl::StrCat("P", player, "_portfolio_", action_id);
-      }
-      return state_->ActionToString(player, action_id);
-    case Phase::kPortfolioP1:
-    case Phase::kPortfolioP2:
-      return absl::StrCat("P", player, "_portfolio_", action_id);
-    case Phase::kMatrixTerminal:
-      return "terminal";
+  if (selector_activated_ || AtDepthLimit()) {
+    return mvs_selector_.ActionToString(player, action_id);
   }
-  SpielFatalError("Unknown phase in MVSState::ActionToString");
+  return state_->ActionToString(player, action_id);
 }
 
 bool MVSState::IsTerminal() const {
-  if (phase_ == Phase::kMatrixTerminal) {
-    return true;
-  }
-  if (phase_ == Phase::kNormal && state_->IsTerminal()) {
-    return true;
-  }
+  if (selector_activated_) return mvs_selector_.IsTerminal();
+  if (state_->IsTerminal()) return true;
   return false;
 }
 
 std::vector<double> MVSState::Returns() const {
-  if (phase_ == Phase::kMatrixTerminal) {
+  if (selector_activated_ && mvs_selector_.IsTerminal()) {
     const MVSGame* game = GetMVSGame();
-    return game->GetPayoff(*state_, p1_choice_, p2_choice_);
+    return game->GetPayoff(*state_, mvs_selector_.P0Choice(),
+                           mvs_selector_.P1Choice());
   }
-  // If the underlying game terminated before depth limit
-  if (state_->IsTerminal()) {
-    return state_->Returns();
-  }
+  if (state_->IsTerminal()) return state_->Returns();
   return std::vector<double>(num_players_, 0.0);
 }
 
 std::vector<double> MVSState::Rewards() const {
-  // This is a terminal reward model - rewards only at terminal
-  if (IsTerminal()) {
-    return Returns();
-  }
+  if (IsTerminal()) return Returns();
   return std::vector<double>(num_players_, 0.0);
 }
 
 std::string MVSState::InformationStateString(Player player) const {
   std::string base = state_->InformationStateString(player);
-
-  switch (phase_) {
-    case Phase::kNormal:
-      if (AtDepthLimit()) {
-        // Transitioning to portfolio selection
-        return absl::StrCat(base, ":MVS_SELECT");
-      }
-      return base;
-    case Phase::kPortfolioP1:
-    case Phase::kPortfolioP2:
-      // Simultaneous selection: neither player knows other's choice yet
-      return absl::StrCat(base, ":MVS_SELECT");
-    case Phase::kMatrixTerminal:
-      // At terminal, include own choice for proper value propagation
-      if (player == 0) {
-        return absl::StrCat(base, ":MVS:", p1_choice_);
-      } else {
-        return absl::StrCat(base, ":MVS:", p2_choice_);
-      }
+  if (selector_activated_ || AtDepthLimit()) {
+    // At depth limit but selector not yet activated = same as kP0Select
+    if (!selector_activated_) return absl::StrCat(base, ":MVS_SEL0");
+    return absl::StrCat(base, mvs_selector_.InformationStateSuffix(player));
   }
-  SpielFatalError("Unknown phase in MVSState::InformationStateString");
+  return base;
 }
 
 std::string MVSState::ObservationString(Player player) const {
-  // Use same logic as information state for observations
   return InformationStateString(player);
 }
 
 std::string MVSState::ToString() const {
   std::string result = state_->ToString();
-  switch (phase_) {
+  Phase phase = GetPhase();
+  switch (phase) {
     case Phase::kNormal:
       if (AtDepthLimit()) {
-        absl::StrAppend(&result, "\n[MVS: At depth limit, P1 selecting]");
+        absl::StrAppend(&result, "\n[MVS: At depth limit, P0 selecting]");
       }
       break;
     case Phase::kPortfolioP1:
-      absl::StrAppend(&result, "\n[MVS: P1 selecting portfolio]");
+      absl::StrAppend(&result, "\n[MVS: P0 selecting portfolio]");
       break;
     case Phase::kPortfolioP2:
-      absl::StrAppend(&result, "\n[MVS: P2 selecting portfolio, P1 chose ",
-                      p1_choice_, "]");
+      absl::StrAppend(&result, "\n[MVS: P1 selecting portfolio]");
       break;
     case Phase::kMatrixTerminal:
-      absl::StrAppend(&result, "\n[MVS: Terminal, P1=", p1_choice_, ", P2=",
-                      p2_choice_, "]");
+      absl::StrAppend(&result, "\n[MVS: Terminal, P0=",
+                      mvs_selector_.P0Choice(), ", P1=",
+                      mvs_selector_.P1Choice(), "]");
       break;
   }
   return result;
@@ -346,52 +359,40 @@ std::unique_ptr<State> MVSState::Clone() const {
 }
 
 std::vector<std::pair<Action, double>> MVSState::ChanceOutcomes() const {
-  if (phase_ != Phase::kNormal || AtDepthLimit()) {
-    return {};
-  }
+  if (selector_activated_ || AtDepthLimit()) return {};
   return state_->ChanceOutcomes();
 }
 
 void MVSState::DoApplyAction(Action action_id) {
-  switch (phase_) {
-    case Phase::kNormal:
-      if (AtDepthLimit()) {
-        // This is P1's portfolio selection
-        p1_choice_ = action_id;
-        phase_ = Phase::kPortfolioP2;
-      } else {
-        // Normal game action
-        bool was_chance = state_->IsChanceNode();
-        state_->ApplyAction(action_id);
+  if (selector_activated_) {
+    mvs_selector_.ApplyAction(action_id);
+    return;
+  }
 
-        // Update depth counters
-        if (!was_chance) {
-          current_depth_++;
-        } else if (GetMVSGame()->GetDepthMode() ==
-                   MVSGame::DepthMode::kRoundBased) {
-          // Increment round counter after chance node
-          current_round_++;
-        }
+  if (AtDepthLimit()) {
+    // First action at depth limit: activate selector, apply P0's choice
+    const MVSGame* game = GetMVSGame();
+    mvs_selector_.Activate(game->NumPortfoliosP1(), game->NumPortfoliosP2());
+    selector_activated_ = true;
+    mvs_selector_.ApplyAction(action_id);
+    return;
+  }
 
-        // Check if we should transition after this action
-        if (!state_->IsTerminal() && !state_->IsChanceNode() && AtDepthLimit()) {
-          phase_ = Phase::kPortfolioP1;
-        }
-      }
-      break;
+  // Normal game action
+  bool was_chance = state_->IsChanceNode();
+  state_->ApplyAction(action_id);
 
-    case Phase::kPortfolioP1:
-      p1_choice_ = action_id;
-      phase_ = Phase::kPortfolioP2;
-      break;
+  if (!was_chance) {
+    current_depth_++;
+  } else if (GetMVSGame()->GetDepthMode() == MVSGame::DepthMode::kRoundBased) {
+    current_round_++;
+  }
 
-    case Phase::kPortfolioP2:
-      p2_choice_ = action_id;
-      phase_ = Phase::kMatrixTerminal;
-      break;
-
-    case Phase::kMatrixTerminal:
-      SpielFatalError("Cannot apply action to terminal state");
+  // Check if we should activate selector after this action
+  if (!state_->IsTerminal() && !state_->IsChanceNode() && AtDepthLimit()) {
+    const MVSGame* game = GetMVSGame();
+    mvs_selector_.Activate(game->NumPortfoliosP1(), game->NumPortfoliosP2());
+    selector_activated_ = true;
   }
 }
 
@@ -879,21 +880,17 @@ MVSStateWithSubtreePureStrategies::MVSStateWithSubtreePureStrategies(
     std::shared_ptr<const Game> game,
     std::unique_ptr<State> state)
     : WrappedState(game, std::move(state)),
-      phase_(Phase::kNormal),
       current_depth_(0),
       current_round_(0),
-      p1_choice_(kInvalidAction),
-      p2_choice_(kInvalidAction),
       portfolios_computed_(false) {}
 
 MVSStateWithSubtreePureStrategies::MVSStateWithSubtreePureStrategies(
     const MVSStateWithSubtreePureStrategies& other)
     : WrappedState(other),
-      phase_(other.phase_),
       current_depth_(other.current_depth_),
       current_round_(other.current_round_),
-      p1_choice_(other.p1_choice_),
-      p2_choice_(other.p2_choice_),
+      mvs_selector_(other.mvs_selector_),
+      selector_activated_(other.selector_activated_),
       portfolio_p0_(other.portfolio_p0_),
       portfolio_p1_(other.portfolio_p1_),
       portfolios_computed_(other.portfolios_computed_) {}
@@ -948,133 +945,80 @@ MVSStateWithSubtreePureStrategies::GetPortfolioP1() const {
   return portfolio_p1_;
 }
 
-Player MVSStateWithSubtreePureStrategies::CurrentPlayer() const {
-  switch (phase_) {
-    case Phase::kNormal:
-      if (AtDepthLimit()) {
-        return 0;
-      }
-      return state_->CurrentPlayer();
-    case Phase::kPortfolioP1:
-      return 0;
-    case Phase::kPortfolioP2:
-      return 1;
-    case Phase::kMatrixTerminal:
-      return kTerminalPlayerId;
+MVSStateWithSubtreePureStrategies::Phase
+MVSStateWithSubtreePureStrategies::GetPhase() const {
+  if (!selector_activated_) {
+    if (AtDepthLimit()) return Phase::kPortfolioP1;
+    return Phase::kNormal;
   }
-  SpielFatalError("Unknown phase");
+  switch (mvs_selector_.GetPhase()) {
+    case MVSPortfolioSelector::Phase::kP0Select: return Phase::kPortfolioP1;
+    case MVSPortfolioSelector::Phase::kP1Select: return Phase::kPortfolioP2;
+    case MVSPortfolioSelector::Phase::kTerminal: return Phase::kMatrixTerminal;
+    default: return Phase::kNormal;
+  }
+}
+
+Player MVSStateWithSubtreePureStrategies::CurrentPlayer() const {
+  if (selector_activated_) return mvs_selector_.CurrentPlayer();
+  if (AtDepthLimit()) return 0;
+  return state_->CurrentPlayer();
 }
 
 std::vector<Action> MVSStateWithSubtreePureStrategies::LegalActions() const {
-  switch (phase_) {
-    case Phase::kNormal:
-      if (AtDepthLimit()) {
-        EnsurePortfoliosComputed();
-        std::vector<Action> actions;
-        for (size_t i = 0; i < portfolio_p0_.size(); ++i) {
-          actions.push_back(i);
-        }
-        return actions;
-      }
-      return state_->LegalActions();
-    case Phase::kPortfolioP1: {
-      EnsurePortfoliosComputed();
-      std::vector<Action> actions;
-      for (size_t i = 0; i < portfolio_p0_.size(); ++i) {
-        actions.push_back(i);
-      }
-      return actions;
-    }
-    case Phase::kPortfolioP2: {
-      EnsurePortfoliosComputed();
-      std::vector<Action> actions;
-      for (size_t i = 0; i < portfolio_p1_.size(); ++i) {
-        actions.push_back(i);
-      }
-      return actions;
-    }
-    case Phase::kMatrixTerminal:
-      return {};
+  if (selector_activated_) return mvs_selector_.LegalActions();
+  if (AtDepthLimit()) {
+    EnsurePortfoliosComputed();
+    std::vector<Action> actions;
+    for (size_t i = 0; i < portfolio_p0_.size(); ++i) actions.push_back(i);
+    return actions;
   }
-  SpielFatalError("Unknown phase");
+  return state_->LegalActions();
 }
 
 std::vector<Action> MVSStateWithSubtreePureStrategies::LegalActions(
     Player player) const {
-  if (player != CurrentPlayer()) {
-    return {};
-  }
+  if (player != CurrentPlayer()) return {};
   return LegalActions();
 }
 
 std::string MVSStateWithSubtreePureStrategies::ActionToString(
     Player player, Action action_id) const {
-  switch (phase_) {
-    case Phase::kNormal:
-      if (AtDepthLimit()) {
-        return absl::StrCat("P", player, "_pure_", action_id);
-      }
-      return state_->ActionToString(player, action_id);
-    case Phase::kPortfolioP1:
-    case Phase::kPortfolioP2:
-      return absl::StrCat("P", player, "_pure_", action_id);
-    case Phase::kMatrixTerminal:
-      return "terminal";
+  if (selector_activated_ || AtDepthLimit()) {
+    return absl::StrCat("P", player, "_pure_", action_id);
   }
-  SpielFatalError("Unknown phase");
+  return state_->ActionToString(player, action_id);
 }
 
 bool MVSStateWithSubtreePureStrategies::IsTerminal() const {
-  if (phase_ == Phase::kMatrixTerminal) {
-    return true;
-  }
-  if (phase_ == Phase::kNormal && state_->IsTerminal()) {
-    return true;
-  }
+  if (selector_activated_) return mvs_selector_.IsTerminal();
+  if (state_->IsTerminal()) return true;
   return false;
 }
 
 std::vector<double> MVSStateWithSubtreePureStrategies::Returns() const {
-  if (phase_ == Phase::kMatrixTerminal) {
+  if (selector_activated_ && mvs_selector_.IsTerminal()) {
     const auto* game = GetMVSGame();
-    return game->GetPayoff(*this, p1_choice_, p2_choice_);
+    return game->GetPayoff(*this, mvs_selector_.P0Choice(),
+                           mvs_selector_.P1Choice());
   }
-  if (state_->IsTerminal()) {
-    return state_->Returns();
-  }
+  if (state_->IsTerminal()) return state_->Returns();
   return std::vector<double>(num_players_, 0.0);
 }
 
 std::vector<double> MVSStateWithSubtreePureStrategies::Rewards() const {
-  if (IsTerminal()) {
-    return Returns();
-  }
+  if (IsTerminal()) return Returns();
   return std::vector<double>(num_players_, 0.0);
 }
 
 std::string MVSStateWithSubtreePureStrategies::InformationStateString(
     Player player) const {
   std::string base = state_->InformationStateString(player);
-
-  switch (phase_) {
-    case Phase::kNormal:
-      if (AtDepthLimit()) {
-        // P0 selects first at depth limit (same as kPortfolioP1)
-        return absl::StrCat(base, ":MVSP_SEL0");
-      }
-      return base;
-    case Phase::kPortfolioP1:
-      return absl::StrCat(base, ":MVSP_SEL0");
-    case Phase::kPortfolioP2:
-      return absl::StrCat(base, ":MVSP_SEL1");
-    case Phase::kMatrixTerminal:
-      if (player == 0) {
-        return absl::StrCat(base, ":MVSP:", p1_choice_);
-      } else {
-        return absl::StrCat(base, ":MVSP:", p2_choice_);
-      }
+  if (selector_activated_ || AtDepthLimit()) {
+    if (!selector_activated_) return absl::StrCat(base, ":MVS_SEL0");
+    return absl::StrCat(base, mvs_selector_.InformationStateSuffix(player));
   }
-  SpielFatalError("Unknown phase");
+  return base;
 }
 
 std::string MVSStateWithSubtreePureStrategies::ObservationString(
@@ -1084,7 +1028,8 @@ std::string MVSStateWithSubtreePureStrategies::ObservationString(
 
 std::string MVSStateWithSubtreePureStrategies::ToString() const {
   std::string result = state_->ToString();
-  switch (phase_) {
+  Phase phase = GetPhase();
+  switch (phase) {
     case Phase::kNormal:
       if (AtDepthLimit()) {
         EnsurePortfoliosComputed();
@@ -1099,12 +1044,12 @@ std::string MVSStateWithSubtreePureStrategies::ToString() const {
       break;
     case Phase::kPortfolioP2:
       absl::StrAppend(&result, "\n[MVSP: P1 selecting from ",
-                      portfolio_p1_.size(), " strategies, P0 chose ",
-                      p1_choice_, "]");
+                      portfolio_p1_.size(), " strategies]");
       break;
     case Phase::kMatrixTerminal:
-      absl::StrAppend(&result, "\n[MVSP: Terminal, P0=", p1_choice_,
-                      ", P1=", p2_choice_, "]");
+      absl::StrAppend(&result, "\n[MVSP: Terminal, P0=",
+                      mvs_selector_.P0Choice(), ", P1=",
+                      mvs_selector_.P1Choice(), "]");
       break;
   }
   return result;
@@ -1116,49 +1061,37 @@ std::unique_ptr<State> MVSStateWithSubtreePureStrategies::Clone() const {
 
 std::vector<std::pair<Action, double>>
 MVSStateWithSubtreePureStrategies::ChanceOutcomes() const {
-  if (phase_ != Phase::kNormal || AtDepthLimit()) {
-    return {};
-  }
+  if (selector_activated_ || AtDepthLimit()) return {};
   return state_->ChanceOutcomes();
 }
 
 void MVSStateWithSubtreePureStrategies::DoApplyAction(Action action_id) {
-  switch (phase_) {
-    case Phase::kNormal:
-      if (AtDepthLimit()) {
-        EnsurePortfoliosComputed();
-        p1_choice_ = action_id;
-        phase_ = Phase::kPortfolioP2;
-      } else {
-        bool was_chance = state_->IsChanceNode();
-        state_->ApplyAction(action_id);
+  if (selector_activated_) {
+    mvs_selector_.ApplyAction(action_id);
+    return;
+  }
 
-        if (!was_chance) {
-          current_depth_++;
-        } else if (GetMVSGame()->GetDepthMode() ==
-                   MVSGame::DepthMode::kRoundBased) {
-          current_round_++;
-        }
+  if (AtDepthLimit()) {
+    EnsurePortfoliosComputed();
+    mvs_selector_.Activate(portfolio_p0_.size(), portfolio_p1_.size());
+    selector_activated_ = true;
+    mvs_selector_.ApplyAction(action_id);
+    return;
+  }
 
-        if (!state_->IsTerminal() && !state_->IsChanceNode() && AtDepthLimit()) {
-          EnsurePortfoliosComputed();
-          phase_ = Phase::kPortfolioP1;
-        }
-      }
-      break;
+  bool was_chance = state_->IsChanceNode();
+  state_->ApplyAction(action_id);
 
-    case Phase::kPortfolioP1:
-      p1_choice_ = action_id;
-      phase_ = Phase::kPortfolioP2;
-      break;
+  if (!was_chance) {
+    current_depth_++;
+  } else if (GetMVSGame()->GetDepthMode() == MVSGame::DepthMode::kRoundBased) {
+    current_round_++;
+  }
 
-    case Phase::kPortfolioP2:
-      p2_choice_ = action_id;
-      phase_ = Phase::kMatrixTerminal;
-      break;
-
-    case Phase::kMatrixTerminal:
-      SpielFatalError("Cannot apply action to terminal state");
+  if (!state_->IsTerminal() && !state_->IsChanceNode() && AtDepthLimit()) {
+    EnsurePortfoliosComputed();
+    mvs_selector_.Activate(portfolio_p0_.size(), portfolio_p1_.size());
+    selector_activated_ = true;
   }
 }
 

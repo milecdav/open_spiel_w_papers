@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "open_spiel/game_transforms/game_wrapper.h"
+#include "open_spiel/game_transforms/matrix_valued_states.h"
 #include "open_spiel/game_transforms/subgame_utils.h"
 #include "open_spiel/policy.h"
 #include "open_spiel/spiel.h"
@@ -164,11 +165,10 @@ class FullGadgetGame : public WrappedGame {
 class FullGadgetState : public WrappedState {
  public:
   enum class Phase {
-    kTrunk,             // In trunk: resolving player -> chance, non-resolving -> free
-    kSubgame,           // In target subgame: both players free
-    kBoundaryP0Select,  // Non-target boundary: P0 selects portfolio
-    kBoundaryP1Select,  // Non-target boundary: P1 selects portfolio
-    kTerminal           // Terminal: matrix payoff, expected value, or game-over
+    kTrunk,        // In trunk: resolving player -> chance, non-resolving -> free
+    kSubgame,      // In target subgame: both players free
+    kBoundaryMVS,  // Non-target boundary: MVS portfolio selection (delegated)
+    kTerminal      // Terminal: matrix payoff, expected value, or game-over
   };
 
   explicit FullGadgetState(std::shared_ptr<const Game> game,
@@ -204,8 +204,7 @@ class FullGadgetState : public WrappedState {
 
   Phase phase_;
   std::vector<double> terminal_returns_;  // Set when transitioning to kTerminal
-  Action boundary_p0_choice_ = kInvalidAction;  // MVS boundary selection
-  Action boundary_p1_choice_ = kInvalidAction;
+  MVSPortfolioSelector mvs_selector_;     // Handles boundary portfolio selection
 
   // Per-state lazily computed portfolios (for enumerate_boundary_portfolios)
   mutable std::vector<std::shared_ptr<Policy>> boundary_portfolio_p0_;
