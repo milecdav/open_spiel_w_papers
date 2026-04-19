@@ -32,7 +32,9 @@
 #include "open_spiel/game_transforms/ox_gadget.h"
 #include "open_spiel/game_transforms/ses_gadget.h"
 #include "open_spiel/game_transforms/full_gadget.h"
+#include "open_spiel/game_transforms/gadget.h"
 #include "open_spiel/game_transforms/subgame_utils.h"
+#include "open_spiel/game_transforms/rnr_mixture.h"
 #include "open_spiel/game_transforms/unsafe_subgame.h"
 #include "open_spiel/policy.h"
 #include "open_spiel/spiel.h"
@@ -45,10 +47,24 @@ namespace {
 // Uses the State-based GetStatePolicy (works for UniformPolicy etc.)
 TabularPolicy TabularizePolicy(const Game& game, const Policy& policy) {
   TabularPolicy result;
+  int num_players = game.NumPlayers();
   std::function<void(const State&)> traverse = [&](const State& state) {
     if (state.IsTerminal()) return;
     if (state.IsChanceNode()) {
       for (const auto& [a, p] : state.ChanceOutcomes()) {
+        auto child = state.Clone();
+        child->ApplyAction(a);
+        traverse(*child);
+      }
+    } else if (state.IsSimultaneousNode()) {
+      // Simultaneous game: store per-player policies for each player.
+      for (Player pl = 0; pl < num_players; ++pl) {
+        auto ap = policy.GetStatePolicy(state, pl);
+        if (!ap.empty()) {
+          result.SetStatePolicy(state.InformationStateString(pl), ap);
+        }
+      }
+      for (Action a : state.LegalActions()) {
         auto child = state.Clone();
         child->ApplyAction(a);
         traverse(*child);
@@ -447,6 +463,171 @@ std::vector<double> ComputeExpectedReturnsUnderPolicy(
   return ev;
 }
 
+GadgetContext BuildGadgetContext(
+    const SubgameDecomposition& decomp, const std::string& pub_obs,
+    const std::vector<std::unique_ptr<State>>& roots, Player resolving_player,
+    const ResolvingConfig& config) {
+  GadgetContext ctx;
+  ctx.original_game = decomp.game;
+  ctx.roots = &roots;
+  ctx.pub_obs = pub_obs;
+  ctx.cfvs = {&decomp.cfvs[0], &decomp.cfvs[1]};
+  ctx.reach_probs = {&decomp.reach_probs[0], &decomp.reach_probs[1]};
+  ctx.chance_reach = &decomp.chance_reach;
+  ctx.resolving_player = resolving_player;
+  ctx.opponent_model = config.opponent_model;
+  return ctx;
+}
+
+void ExtractResolvingStrategyInto(
+    const TabularPolicy& policy, const std::string& is_prefix, Player player,
+    const std::vector<std::unique_ptr<State>>& roots, TabularPolicy* out) {
+  (void)roots;
+  SPIEL_CHECK_TRUE(out != nullptr);
+  for (const auto& [sub_is, ap] : policy.PolicyTable()) {
+    if (is_prefix.empty()) {
+      // Empty prefix means entries are already in original-game key space.
+      // Skip known synthetic prefixes from transformed wrappers.
+      if (sub_is.find("rr_") == 0 || sub_is == "rnr_root" ||
+          sub_is == "unsafe_start") {
+        continue;
+      }
+      out->SetStatePolicy(sub_is, ap);
+      continue;
+    }
+
+    if (sub_is.compare(0, is_prefix.size(), is_prefix) != 0) continue;
+    std::string orig_is = sub_is.substr(is_prefix.size());
+
+    // Full gadget may emit player-tagged keys, e.g. "P0:<orig_is>".
+    if (orig_is.size() > 3 && orig_is[0] == 'P' && orig_is[2] == ':') {
+      int tagged_player = orig_is[1] - '0';
+      if (tagged_player != player) continue;
+      orig_is = orig_is.substr(3);
+    }
+    out->SetStatePolicy(orig_is, ap);
+  }
+}
+
+TabularPolicy SolveNashGame(const Game& game, SolverType solver_type,
+                            int cfr_iterations) {
+  return SolveTransformedGame(game, solver_type, cfr_iterations);
+}
+
+std::shared_ptr<const UnsafeSubgameGame> BuildUnsafeSubgameWithOpponentModelReach(
+    const GadgetContext& ctx, Player opponent) {
+  SPIEL_CHECK_TRUE(ctx.original_game != nullptr);
+  SPIEL_CHECK_TRUE(ctx.roots != nullptr);
+  SPIEL_CHECK_TRUE(ctx.opponent_model != nullptr);
+
+  std::vector<const State*> root_ptrs;
+  root_ptrs.reserve(ctx.roots->size());
+  for (const auto& root : *ctx.roots) root_ptrs.push_back(root.get());
+  auto opp_reach = ComputeReachProbabilities(*ctx.original_game, *ctx.opponent_model,
+                                             opponent, root_ptrs);
+
+  std::vector<std::unique_ptr<State>> subgame_roots;
+  std::vector<double> reaches;
+  for (const auto& root : *ctx.roots) {
+    const std::string hist = root->HistoryString();
+    auto it = opp_reach.find(hist);
+    if (it != opp_reach.end() && it->second > 0.0) {
+      subgame_roots.push_back(root->Clone());
+      reaches.push_back(it->second);
+    }
+  }
+  if (subgame_roots.empty()) return nullptr;
+  return CreateUnsafeSubgame(ctx.original_game, std::move(subgame_roots),
+                             std::move(reaches));
+}
+
+std::function<std::string(const State&, Player)> MakeCanonicalizerForSubgames(
+    const std::string& free_prefix, const std::string& fixed_prefix) {
+  return MakeSubgameISCanonicalizer(free_prefix, fixed_prefix);
+}
+
+struct EffectiveResolvingConfig {
+  SolverType legacy_solver;
+  GadgetType legacy_gadget;
+  SolverKind solver_kind;
+  ResponseKind response_kind;
+  GadgetKind gadget_kind;
+};
+
+EffectiveResolvingConfig ResolveEffectiveConfig(const ResolvingConfig& config) {
+  EffectiveResolvingConfig eff;
+  eff.solver_kind = config.solver_kind;
+  eff.response_kind = config.response_kind;
+  eff.gadget_kind = config.gadget_kind;
+
+  // Backward-compatible overrides from legacy fields.
+  // If caller explicitly set solver_kind=kLP on the new API, preserve it.
+  const bool explicit_lp = (config.solver_kind == SolverKind::kLP);
+  if (config.solver == SolverType::kRNR) {
+    eff.response_kind = ResponseKind::kRNR;
+    if (!explicit_lp) eff.solver_kind = SolverKind::kCFR;
+  } else if (config.solver == SolverType::kLP) {
+    eff.solver_kind = SolverKind::kLP;
+  } else {
+    if (!explicit_lp) eff.solver_kind = SolverKind::kCFR;
+  }
+
+  switch (config.gadget) {
+    case GadgetType::kNone:
+      eff.gadget_kind = GadgetKind::kUnsafe;
+      break;
+    case GadgetType::kResolving:
+      eff.gadget_kind = GadgetKind::kResolving;
+      break;
+    case GadgetType::kMaxMargin:
+      eff.gadget_kind = GadgetKind::kMaxMargin;
+      break;
+    case GadgetType::kFullPath:
+      eff.gadget_kind = GadgetKind::kFullPath;
+      break;
+    case GadgetType::kFullTrunk:
+      eff.gadget_kind = GadgetKind::kFullTrunk;
+      break;
+    case GadgetType::kSES:
+    case GadgetType::kOX:
+      // Legacy-only gadgets kept during transition.
+      break;
+  }
+
+  // Reconstruct legacy dispatch target from new axes for current code path.
+  eff.legacy_solver = (eff.response_kind == ResponseKind::kRNR)
+                          ? SolverType::kRNR
+                          : (eff.solver_kind == SolverKind::kLP
+                                 ? SolverType::kLP
+                                 : SolverType::kCFR);
+
+  if (config.gadget == GadgetType::kSES || config.gadget == GadgetType::kOX) {
+    eff.legacy_gadget = config.gadget;
+  } else {
+    switch (eff.gadget_kind) {
+      case GadgetKind::kUnsafe:
+        eff.legacy_gadget = GadgetType::kNone;
+        break;
+      case GadgetKind::kResolving:
+        eff.legacy_gadget = GadgetType::kResolving;
+        break;
+      case GadgetKind::kMaxMargin:
+        eff.legacy_gadget = GadgetType::kMaxMargin;
+        break;
+      case GadgetKind::kFullPath:
+        eff.legacy_gadget = GadgetType::kFullPath;
+        break;
+      case GadgetKind::kFullTrunk:
+        eff.legacy_gadget = GadgetType::kFullTrunk;
+        break;
+      case GadgetKind::kResolvingByIS:
+        eff.legacy_gadget = GadgetType::kResolvingByIS;
+        break;
+    }
+  }
+  return eff;
+}
+
 }  // namespace
 
 // ============================================================================
@@ -458,6 +639,7 @@ std::shared_ptr<TabularPolicy> ResolveSubgames(
     const TabularPolicy& trunk_policy,
     const ResolvingConfig& config) {
   auto combined = std::make_shared<TabularPolicy>();
+  const EffectiveResolvingConfig eff = ResolveEffectiveConfig(config);
 
   // Copy trunk
   for (const auto& [player, info_states] : decomp.trunk_info_states) {
@@ -467,9 +649,10 @@ std::shared_ptr<TabularPolicy> ResolveSubgames(
     }
   }
 
-  if (config.solver == SolverType::kCFR || config.solver == SolverType::kLP) {
+  if (eff.legacy_solver == SolverType::kCFR ||
+      eff.legacy_solver == SolverType::kLP) {
     // Standard equilibrium solving (CFR or LP)
-    if (config.gadget == GadgetType::kNone) {
+    if (eff.legacy_gadget == GadgetType::kNone) {
       // Unsafe: solve once, extract both players' strategies
       for (const auto& [pub_obs, roots] : decomp.grouped_subgames) {
         std::vector<std::unique_ptr<State>> subgame_roots;
@@ -487,7 +670,7 @@ std::shared_ptr<TabularPolicy> ResolveSubgames(
         auto unsafe = CreateUnsafeSubgame(
             decomp.game, std::move(subgame_roots), std::move(total_reaches));
         TabularPolicy policy = SolveTransformedGame(
-            *unsafe, config.solver, config.cfr_iterations);
+            *unsafe, eff.legacy_solver, config.cfr_iterations);
         const std::string prefix = "unsafe:subgame:";
         for (const auto& [sub_is, ap] : policy.PolicyTable()) {
           if (sub_is.compare(0, prefix.length(), prefix) == 0) {
@@ -495,7 +678,7 @@ std::shared_ptr<TabularPolicy> ResolveSubgames(
           }
         }
       }
-    } else if (config.gadget == GadgetType::kSES) {
+    } else if (eff.legacy_gadget == GadgetType::kSES) {
       // SES gadget: solve per-player using SES gadget
       // SES requires an opponent model for computing model reach p̂(I)
       SPIEL_CHECK_TRUE(config.opponent_model != nullptr);
@@ -532,7 +715,7 @@ std::shared_ptr<TabularPolicy> ResolveSubgames(
               config.alpha, model_info_set_reach);
 
           TabularPolicy policy = SolveTransformedGame(
-              *ses_game, config.solver, config.cfr_iterations);
+              *ses_game, eff.legacy_solver, config.cfr_iterations);
 
           // In SES, extract the RESOLVING player's strategy (they only act
           // in the subgame). The non-resolving player has artificial info set
@@ -548,7 +731,7 @@ std::shared_ptr<TabularPolicy> ResolveSubgames(
           }
         }
       }
-    } else if (config.gadget == GadgetType::kOX) {
+    } else if (eff.legacy_gadget == GadgetType::kOX) {
       // OX gadget: solve per-player using OX gadget
       // OX requires an opponent model for computing model reach p̂(I) and CBV
       SPIEL_CHECK_TRUE(config.opponent_model != nullptr);
@@ -601,7 +784,7 @@ std::shared_ptr<TabularPolicy> ResolveSubgames(
               config.beta, model_info_set_reach);
 
           TabularPolicy policy = SolveTransformedGame(
-              *ox_game, config.solver, config.cfr_iterations);
+              *ox_game, eff.legacy_solver, config.cfr_iterations);
 
           // Extract the RESOLVING player's strategy
           const std::string prefix = "ox_F:subgame:";
@@ -615,10 +798,10 @@ std::shared_ptr<TabularPolicy> ResolveSubgames(
           }
         }
       }
-    } else if (config.gadget == GadgetType::kFullPath ||
-               config.gadget == GadgetType::kFullTrunk) {
+    } else if (eff.legacy_gadget == GadgetType::kFullPath ||
+               eff.legacy_gadget == GadgetType::kFullTrunk) {
       // Full Gadget: keeps actual trunk game structure for exact exploitability
-      FullGadgetGame::Mode mode = (config.gadget == GadgetType::kFullPath)
+      FullGadgetGame::Mode mode = (eff.legacy_gadget == GadgetType::kFullPath)
                                       ? FullGadgetGame::Mode::kPath
                                       : FullGadgetGame::Mode::kTrunk;
 
@@ -658,7 +841,7 @@ std::shared_ptr<TabularPolicy> ResolveSubgames(
                     << std::endl;
 
           TabularPolicy policy = SolveTransformedGame(
-              *fg, config.solver, config.cfr_iterations);
+              *fg, eff.legacy_solver, config.cfr_iterations);
 
           // Extract resolving player's strategy from subgame info states
           const std::string prefix = "full_F:subgame:";
@@ -693,7 +876,7 @@ std::shared_ptr<TabularPolicy> ResolveSubgames(
           std::string prefix;
 
           // adversary_player = non_res (has artificial actions)
-          if (config.gadget == GadgetType::kResolving) {
+          if (eff.legacy_gadget == GadgetType::kResolving) {
             gadget_game = CreateGadgetGame(
                 decomp.game, std::move(gadget_roots), non_res,
                 decomp.cfvs[non_res]);
@@ -706,7 +889,7 @@ std::shared_ptr<TabularPolicy> ResolveSubgames(
           }
 
           TabularPolicy policy = SolveTransformedGame(
-              *gadget_game, config.solver, config.cfr_iterations);
+              *gadget_game, eff.legacy_solver, config.cfr_iterations);
 
           // Extract the resolving player's strategy
           for (const auto& [sub_is, ap] : policy.PolicyTable()) {
@@ -721,16 +904,24 @@ std::shared_ptr<TabularPolicy> ResolveSubgames(
       }
     }
   } else {
-    // RNR-based solving
+    // Canonical RNR path: solve an explicit mixture game on target pass, and
+    // solve plain gadget game for opponent pass when gadget distorts opponent.
     SPIEL_CHECK_TRUE(config.opponent_model != nullptr);
-    int target = config.target_player;
-    int opponent = 1 - target;
+    const int target = config.target_player;
+    const int opponent = 1 - target;
+    const SolverType nash_solver =
+        (eff.solver_kind == SolverKind::kLP) ? SolverType::kLP : SolverType::kCFR;
 
-    for (const auto& [pub_obs, roots] : decomp.grouped_subgames) {
-      auto info_per_player = CollectSubgameInfoStatesPerPlayer(roots);
+    // Special case: kNone (unsafe) with RNR. The two-pass approach (separate
+    // opponent and target passes) fails at p=1 because the target's best-
+    // response assigns zero reach to some subgame roots, making joint reach
+    // zero and causing Build() to return null for those subgames. Use the
+    // original single-pass approach: build one joint unsafe subgame, run
+    // RNRSolver directly, and extract both players' strategies.
+    if (eff.legacy_gadget == GadgetType::kNone) {
+      for (const auto& [pub_obs, roots] : decomp.grouped_subgames) {
+        auto info_per_player = CollectSubgameInfoStatesPerPlayer(roots);
 
-      if (config.gadget == GadgetType::kNone) {
-        // Unsafe subgame: no T/F choice, extract both players' strategies.
         std::vector<std::unique_ptr<State>> subgame_roots;
         std::vector<double> total_reaches;
         for (const auto& root : roots) {
@@ -742,9 +933,10 @@ std::shared_ptr<TabularPolicy> ResolveSubgames(
           }
         }
         if (subgame_roots.empty()) continue;
+
         auto subgame_game = CreateUnsafeSubgame(
             decomp.game, std::move(subgame_roots), std::move(total_reaches));
-        std::string prefix = "unsafe:subgame:";
+        const std::string prefix = "unsafe:subgame:";
 
         GadgetPolicyWrapper wrapper(config.opponent_model, prefix, -1, 0);
         algorithms::RNRSolver solver(*subgame_game, target, &wrapper, config.p,
@@ -763,103 +955,78 @@ std::shared_ptr<TabularPolicy> ResolveSubgames(
             }
           }
         }
-      } else {
-        // Gadget cases (kResolving or kMaxMargin).
-        // The non-resolving (adversary) player has artificial T/F (or info-set
-        // choice) actions that distort their subgame strategy. So we must use
-        // two gadgets:
-        //   1. Gadget with adversary=opponent: solve with RNR → extract target's
-        //      strategy (target is resolving, strategy is undistorted)
-        //   2. Gadget with adversary=target: solve with CFR → extract opponent's
-        //      strategy (opponent is resolving, strategy is undistorted)
+      }
+      return combined;
+    }
 
-        // --- Gadget 1: target player's strategy via RNR ---
-        {
-          int non_res = opponent;  // opponent is the adversary
-          auto gadget_roots =
-              BuildSubgameRoots(roots, non_res, decomp.reach_probs[target]);
-          if (gadget_roots.empty()) continue;
+    std::unordered_map<std::string, std::vector<std::string>> boundary_by_group;
+    for (const auto& [pub_obs, roots] : decomp.grouped_subgames) {
+      for (const auto& root : roots) {
+        boundary_by_group[pub_obs].push_back(root->HistoryString());
+      }
+    }
+    auto trunk_policy_ptr = std::make_shared<TabularPolicy>(trunk_policy);
 
-          std::shared_ptr<const Game> gadget_game;
-          std::string prefix;
-          int follow_action = -1;
-          int num_choice_actions = 0;
+    std::unique_ptr<Gadget> gadget;
+    if (eff.legacy_gadget == GadgetType::kResolving) {
+      gadget = MakeResolvingGadget();
+    } else if (eff.legacy_gadget == GadgetType::kResolvingByIS) {
+      gadget = MakeResolvingByISGadget();
+    } else if (eff.legacy_gadget == GadgetType::kMaxMargin) {
+      gadget = MakeMaxMarginGadget();
+    } else if (eff.legacy_gadget == GadgetType::kFullPath) {
+      gadget = MakeFullGadget(FullGadgetGame::Mode::kPath, trunk_policy_ptr,
+                              boundary_by_group);
+    } else if (eff.legacy_gadget == GadgetType::kFullTrunk) {
+      gadget = MakeFullGadget(FullGadgetGame::Mode::kTrunk, trunk_policy_ptr,
+                              boundary_by_group);
+    } else {
+      SpielFatalError("RNR mixture dispatcher: unsupported legacy gadget.");
+    }
+    SPIEL_CHECK_TRUE(gadget != nullptr);
 
-          // adversary_player = non_res = opponent
-          if (config.gadget == GadgetType::kResolving) {
-            gadget_game = CreateGadgetGame(
-                decomp.game, std::move(gadget_roots), non_res,
-                decomp.cfvs[non_res]);
-            prefix = "gadget_F:subgame:";
-            follow_action = GadgetGame::kFollowAction;
-          } else {  // kMaxMargin
-            auto mm_game = CreateMaxMarginGadgetGame(
-                decomp.game, std::move(gadget_roots), non_res,
-                decomp.cfvs[non_res]);
-            num_choice_actions = mm_game->NumInfoSets();
-            gadget_game = mm_game;
-            prefix = "mm_F:subgame:";
+    // Run opponent pass first so target pass (mixture) writes final target rows.
+    // Even for non-distorting gadgets, this ensures opponent rows are filled in
+    // original-game key space from the plain gadget game.
+    std::vector<Player> passes = {opponent, target};
+
+    for (Player resolving : passes) {
+      const bool rnr_pass = (resolving == target);
+      for (const auto& [pub_obs, roots] : decomp.grouped_subgames) {
+        GadgetContext ctx = BuildGadgetContext(
+            decomp, pub_obs, roots, resolving, config);
+        auto free_game = gadget->Build(ctx);
+        if (!free_game) continue;
+
+        std::shared_ptr<const Game> game_to_solve;
+        std::string extract_prefix;
+
+        if (rnr_pass) {
+          auto fixed_game =
+              BuildUnsafeSubgameWithOpponentModelReach(ctx, opponent);
+          if (!fixed_game) continue;
+          auto canonicalizer = MakeCanonicalizerForSubgames(
+              gadget->SubgamePrefix(), "unsafe:subgame:");
+          double fixed_multiplier = 1.0;
+          if (const auto* rg = dynamic_cast<const GadgetGame*>(free_game.get())) {
+            fixed_multiplier = rg->NormalizationConstant();
           }
-
-          GadgetPolicyWrapper wrapper(config.opponent_model, prefix,
-                                      follow_action, num_choice_actions);
-          algorithms::RNRSolver solver(*gadget_game, target, &wrapper, config.p,
-                                       true, true, true);
-          for (int i = 0; i < config.cfr_iterations; ++i) {
-            solver.EvaluateAndUpdatePolicy();
-          }
-
-          // Extract target player's strategy (resolving).
-          TabularPolicy policy = solver.TabularAveragePolicy();
-          for (const auto& [sub_is, ap] : policy.PolicyTable()) {
-            if (sub_is.compare(0, prefix.length(), prefix) == 0) {
-              std::string orig = sub_is.substr(prefix.length());
-              if (info_per_player[target].count(orig) > 0) {
-                combined->SetStatePolicy(orig, ap);
-              }
-            }
-          }
+          game_to_solve = CreateRNRMixtureGame(
+              free_game, fixed_game, target,
+              std::shared_ptr<const Policy>(config.opponent_model,
+                                            [](const Policy*) {}),
+              config.p, config.lock_opponent_in_fixed_branch,
+              fixed_multiplier, canonicalizer);
+          extract_prefix = "";
+        } else {
+          game_to_solve = free_game;
+          extract_prefix = gadget->SubgamePrefix();
         }
 
-        // --- Gadget 2: opponent's strategy via CFR ---
-        {
-          int non_res = target;  // target is the adversary
-          auto gadget_roots =
-              BuildSubgameRoots(roots, non_res, decomp.reach_probs[opponent]);
-          if (gadget_roots.empty()) continue;
-
-          std::shared_ptr<const Game> gadget_game;
-          std::string prefix;
-
-          // adversary_player = non_res = target
-          if (config.gadget == GadgetType::kResolving) {
-            gadget_game = CreateGadgetGame(
-                decomp.game, std::move(gadget_roots), non_res,
-                decomp.cfvs[non_res]);
-            prefix = "gadget_F:subgame:";
-          } else {  // kMaxMargin
-            gadget_game = CreateMaxMarginGadgetGame(
-                decomp.game, std::move(gadget_roots), non_res,
-                decomp.cfvs[non_res]);
-            prefix = "mm_F:subgame:";
-          }
-
-          algorithms::CFRSolverBase cfr_solver(*gadget_game, true, true, true);
-          for (int i = 0; i < config.cfr_iterations; ++i) {
-            cfr_solver.EvaluateAndUpdatePolicy();
-          }
-
-          // Extract opponent's strategy (resolving).
-          TabularPolicy policy = cfr_solver.TabularAveragePolicy();
-          for (const auto& [sub_is, ap] : policy.PolicyTable()) {
-            if (sub_is.compare(0, prefix.length(), prefix) == 0) {
-              std::string orig = sub_is.substr(prefix.length());
-              if (info_per_player[opponent].count(orig) > 0) {
-                combined->SetStatePolicy(orig, ap);
-              }
-            }
-          }
-        }
+        TabularPolicy solved =
+            SolveNashGame(*game_to_solve, nash_solver, config.cfr_iterations);
+        ExtractResolvingStrategyInto(
+            solved, extract_prefix, resolving, roots, combined.get());
       }
     }
   }
@@ -877,6 +1044,7 @@ std::shared_ptr<TabularPolicy> ContinualResolve(
     const ResolvingConfig& config,
     int depth,
     MVSGame::DepthMode depth_mode) {
+  const EffectiveResolvingConfig eff = ResolveEffectiveConfig(config);
   // Tabularize opponent model so string-based GetStatePolicy works.
   // Use shared_ptr so it can be passed to the MVS game as the model entry.
   auto opponent_tabular = std::make_shared<TabularPolicy>(
@@ -898,17 +1066,88 @@ std::shared_ptr<TabularPolicy> ContinualResolve(
   // opponent model) and MVS portfolio choice info states for the opponent
   // (always selecting the model entry, i.e., the last action).
   auto model_indices = PrecomputeModelActionIndices(*mvs_game, opponent);
-  MVSModelEntryPolicy mvs_opponent(opponent_tabular.get(),
-                                   std::move(model_indices));
+  auto mvs_opponent_shared = std::make_shared<MVSModelEntryPolicy>(
+      opponent_tabular.get(), std::move(model_indices));
 
-  algorithms::RNRSolver trunk_solver(
-      *mvs_game, config.target_player, &mvs_opponent, config.p,
-      true, true, true);
+  std::shared_ptr<Policy> mvs_policy;
 
-  for (int i = 0; i < config.cfr_iterations; ++i) {
-    trunk_solver.EvaluateAndUpdatePolicy();
+  if (eff.solver_kind == SolverKind::kLP) {
+#if OPEN_SPIEL_BUILD_WITH_ORTOOLS
+    // Wrap MVS in an RNR mixture game so LP can compute the RNR equilibrium.
+    // Free branch: opponent is a free player in MVS.
+    // Fixed branch (lock=true): opponent is chance drawn from
+    // MVSModelEntryPolicy (picks model entry at portfolio nodes, delegates
+    // elsewhere). Target IS are shared across branches via the identity
+    // canonicalizer (MVS IS strings are their own canonical form).
+    auto identity_canon =
+        [](const State& s, Player p) -> std::string {
+      return s.InformationStateString(p);
+    };
+    auto mvs_mixture = CreateRNRMixtureGame(
+        mvs_game, mvs_game, config.target_player,
+        std::static_pointer_cast<const Policy>(mvs_opponent_shared),
+        config.p,
+        /*lock_opponent_in_fixed_branch=*/true,
+        /*fixed_branch_utility_multiplier=*/1.0,
+        identity_canon);
+    auto mix_pair = algorithms::ortools::MakeEquilibriumPolicy(
+        *mvs_mixture, /*uniform_imputation=*/true);
+    const TabularPolicy& mix_policy = mix_pair.first;
+
+    // Build an MVS-IS-keyed policy by walking MVS and mixture in parallel
+    // along the free branch (at p=1 free branch has zero reach, so walk
+    // fixed branch instead; target IS is shared either way).
+    auto mvs_tabular = std::make_shared<TabularPolicy>();
+    std::function<void(const State&, const State&)> walk =
+        [&](const State& mvs_state, const State& mix_state) {
+      if (mvs_state.IsTerminal()) return;
+      if (mvs_state.IsChanceNode()) {
+        for (const auto& [a, prob] : mvs_state.ChanceOutcomes()) {
+          auto ms = mvs_state.Clone(); ms->ApplyAction(a);
+          auto xs = mix_state.Clone(); xs->ApplyAction(a);
+          walk(*ms, *xs);
+        }
+        return;
+      }
+      Player pl = mvs_state.CurrentPlayer();
+      std::string mix_is = mix_state.InformationStateString(pl);
+      auto ap = mix_policy.GetStatePolicy(mix_is);
+      if (!ap.empty()) {
+        mvs_tabular->SetStatePolicy(
+            mvs_state.InformationStateString(pl), ap);
+      }
+      for (Action a : mvs_state.LegalActions()) {
+        auto ms = mvs_state.Clone(); ms->ApplyAction(a);
+        auto xs = mix_state.Clone(); xs->ApplyAction(a);
+        walk(*ms, *xs);
+      }
+    };
+    auto mix_root = mvs_mixture->NewInitialState();
+    if (config.p < 1.0) {
+      mix_root->ApplyAction(RNRMixtureGame::kFreeBranchAction);
+    } else {
+      mix_root->ApplyAction(RNRMixtureGame::kFixedBranchAction);
+    }
+    walk(*mvs_game->NewInitialState(), *mix_root);
+    mvs_policy = mvs_tabular;
+#else
+    SpielFatalError(
+        "LP trunk requested but OPEN_SPIEL_BUILD_WITH_ORTOOLS is not enabled.");
+#endif
+  } else {
+    algorithms::RNRSolver trunk_solver(
+        *mvs_game, config.target_player, mvs_opponent_shared.get(),
+        config.p, true, true, true);
+    for (int i = 0; i < config.cfr_iterations; ++i) {
+      trunk_solver.EvaluateAndUpdatePolicy();
+    }
+    // Use TabularAveragePolicy (not AveragePolicy) so that copy_trunk and
+    // ExtractReachProbsFromMVS can safely call GetStatePolicy without
+    // throwing for states not visited during training (e.g. non-model-entry
+    // portfolio branches that have zero fixed_opponent_reach at p>0).
+    mvs_policy = std::make_shared<TabularPolicy>(
+        trunk_solver.TabularAveragePolicy());
   }
-  auto mvs_policy = trunk_solver.AveragePolicy();
 
   // Step 2: Extract trunk policy into original game's info state space
   // Both players' strategies come from the RNR solution.
@@ -963,7 +1202,7 @@ std::shared_ptr<TabularPolicy> ContinualResolve(
   // but the actual opponent is (1-p)*free + p*model. At p=1, the free part
   // has weight 0 so its reach is arbitrary. We need to blend with the model's
   // actual reach on the original game.
-  if (config.p > 0 && config.solver == SolverType::kRNR) {
+  if (config.p > 0 && eff.response_kind == ResponseKind::kRNR) {
     // Collect all subgame root states for reach computation
     std::vector<const State*> root_ptrs;
     for (const auto& [pub_obs, roots] : decomp.grouped_subgames) {

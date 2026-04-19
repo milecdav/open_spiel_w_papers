@@ -1064,6 +1064,49 @@ void TestABD_p1_ExactBR() {
 }
 
 // =============================================================================
+// Test 18: LP trunk smoke test on Kuhn poker
+// =============================================================================
+
+void TestLPTrunkKuhn() {
+  std::cout << "TestLPTrunkKuhn..." << std::endl;
+
+#if OPEN_SPIEL_BUILD_WITH_ORTOOLS
+  auto game = LoadGame("kuhn_poker");
+  UniformPolicy uniform;
+  TabularPolicy uniform_tabular = MakeUniformTabular(*game);
+
+  ResolvingConfig config;
+  // New API: LP trunk + RNR response with resolving gadget.
+  config.solver_kind = SolverKind::kLP;    // Use LP for the trunk MVS game
+  config.gadget_kind = GadgetKind::kResolving;
+  config.response_kind = ResponseKind::kRNR;
+  // Legacy fields: kRNR dispatch + kResolving gadget (solver_kind=kLP
+  // is preserved when explicit_lp=true in EffectiveResolvingConfig).
+  config.solver = SolverType::kRNR;
+  config.gadget = GadgetType::kResolving;
+  config.opponent_model = &uniform_tabular;
+  config.p = 0.5;
+  config.target_player = 0;
+  config.cfr_iterations = 100;
+  config.lock_opponent_in_fixed_branch = true;
+
+  auto result = ContinualResolve(
+      game, uniform, config, 2, MVSGame::DepthMode::kActionBased);
+
+  SPIEL_CHECK_GT(result->PolicyTable().size(), 0);
+
+  double exp = algorithms::Exploitability(*game, *result);
+  std::cout << "  LP trunk exploitability: " << exp << std::endl;
+  SPIEL_CHECK_TRUE(std::isfinite(exp));
+
+  std::cout << "TestLPTrunkKuhn PASSED" << std::endl;
+#else
+  std::cout << "  SKIPPED (OPEN_SPIEL_BUILD_WITH_ORTOOLS not enabled)"
+            << std::endl;
+#endif
+}
+
+// =============================================================================
 // Main
 // =============================================================================
 
@@ -1093,6 +1136,10 @@ int main(int argc, char** argv) {
     open_spiel::TestABD_p1_ExactBR();
     return 0;
   }
+  if (arg == "lp") {
+    open_spiel::TestLPTrunkKuhn();
+    return 0;
+  }
 
   open_spiel::TestGadgetPolicyWrapper();
   open_spiel::TestResolveSubgamesCFR();
@@ -1111,6 +1158,7 @@ int main(int argc, char** argv) {
   open_spiel::TestLeduc_p0_vs_Gadget();
   open_spiel::TestLeduc_p1_vs_BR();
   open_spiel::TestABD_p1_ExactBR();
+  open_spiel::TestLPTrunkKuhn();
 
   std::cout << "\nAll tests passed!" << std::endl;
   return 0;

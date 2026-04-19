@@ -5,6 +5,8 @@ add_library (game_transforms OBJECT
   coop_to_1p.h
   efg_writer.cc
   efg_writer.h
+  gadget.cc
+  gadget.h
   matrix_valued_states.cc
   matrix_valued_states.h
   misere.cc
@@ -17,6 +19,10 @@ add_library (game_transforms OBJECT
   max_margin_gadget.h
   resolving_gadget.cc
   resolving_gadget.h
+  resolving_by_is.cc
+  resolving_by_is.h
+  rnr_mixture.cc
+  rnr_mixture.h
   ses_gadget.cc
   ses_gadget.h
   ox_gadget.cc
@@ -128,3 +134,15 @@ add_executable(full_gadget_experiment
   full_gadget_experiment.cc
   ${OPEN_SPIEL_OBJECTS}
   $<TARGET_OBJECTS:tests>)
+
+add_executable(rnr_mixture_test
+  rnr_mixture_test.cc
+  ${OPEN_SPIEL_OBJECTS}
+  $<TARGET_OBJECTS:tests>)
+add_test(rnr_mixture_test rnr_mixture_test)
+
+add_executable(gadget_test
+  gadget_test.cc
+  ${OPEN_SPIEL_OBJECTS}
+  $<TARGET_OBJECTS:tests>)
+add_test(gadget_test gadget_test)

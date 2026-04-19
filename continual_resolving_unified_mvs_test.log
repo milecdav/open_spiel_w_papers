@@ -1,0 +1,116 @@
+TestGadgetPolicyWrapper...
+TestGadgetPolicyWrapper PASSED
+TestResolveSubgamesCFR...
+  Full:     0.000172697
+  Resolved: 0.000226904
+TestResolveSubgamesCFR PASSED
+TestCDBRKuhn...
+  Uniform returns: 0.125, -0.125
+  Policy table size: 12
+  Exploitability: 0.249998
+  P0 gain vs uniform: 0.499992
+TestCDBRKuhn PASSED
+TestCDRNRKuhnResolving...
+  P0 gain vs uniform: 0.388818
+  Exploitability: 0.111072
+TestCDRNRKuhnResolving PASSED
+TestCDRNRKuhnMaxMargin...
+  P0 gain vs uniform: 0.388818
+  Exploitability: 0.111072
+TestCDRNRKuhnMaxMargin PASSED
+TestCDRNRLeducResolving...
+  P0 gain vs uniform: 1.79205
+  Exploitability: 0.719826
+TestCDRNRLeducResolving PASSED
+TestCDRNRLeducMaxMargin...
+  P0 gain vs uniform: 1.46091
+  Exploitability: 0.956803
+TestCDRNRLeducMaxMargin PASSED
+TestSweepP...
+  === Target player 0 ===
+  p=0: gain_vs_uniform=0.122635, exploitability=0.000424366
+  p=0.25: gain_vs_uniform=0.38932, exploitability=0.062343
+  p=0.5: gain_vs_uniform=0.388723, exploitability=0.111274
+  p=0.75: gain_vs_uniform=0.499992, exploitability=0.249998
+  p=1: gain_vs_uniform=0.499992, exploitability=0.249998
+  Trend: gain 0.122635 -> 0.499992, expl 0.000424366 -> 0.249998
+  === Target player 1 ===
+  p=0: gain_vs_uniform=0.166809, exploitability=0.000721701
+  p=0.25: gain_vs_uniform=0.166929, exploitability=0.0384107
+  p=0.5: gain_vs_uniform=0.333631, exploitability=0.111603
+  p=0.75: gain_vs_uniform=0.361159, exploitability=0.139045
+  p=1: gain_vs_uniform=0.41664, exploitability=0.250006
+  Trend: gain 0.166809 -> 0.41664, expl 0.000721701 -> 0.250006
+TestSweepP PASSED
+TestCDRNR_p0_vs_Gadget...
+  [P0] Gadget: expl=0.000226904, gain=0.125422
+  [P0] CDRNR:  expl=0.000226904, gain=0.125422
+  [P1] Gadget: expl=0.000226904, gain=0.16666
+  [P1] CDRNR:  expl=0.000184854, gain=0.166955
+TestCDRNR_p0_vs_Gadget PASSED
+TestCDRNR_p1_vs_BR...
+  [P0] BR:    gain=0.5, expl=0.5
+  [P0] CDRNR: gain=0.499999, expl=0.25
+  [P0] Gain diff: 1.33069e-06, Expl diff: 0.25
+  [P1] BR:    gain=0.416667, expl=0.375
+  [P1] CDRNR: gain=0.416662, expl=0.250001
+  [P1] Gain diff: 4.32468e-06, Expl diff: 0.124999
+TestCDRNR_p1_vs_BR PASSED
+TestCDRNRGoofspiel...
+  === Target player 0 ===
+  p=0: expl=0.029828, gain=0.603644
+  p=0.5: expl=0.170037, gain=0.666683
+  p=1: expl=0.999944, gain=0.708316
+  === Target player 1 ===
+  p=0: expl=0.0203333, gain=0.594008
+  p=0.5: expl=0.261271, gain=0.666653
+  p=1: expl=0.999911, gain=0.708316
+TestCDRNRGoofspiel PASSED
+TestCDRNRLeduc...
+  === Target player 0 ===
+  p=0: expl=0.00382566, gain=0.612047
+  p=0.5: expl=0.719826, gain=1.79205
+  p=1: expl=3.09869, gain=2.08743
+  === Target player 1 ===
+  p=0: expl=0.00488449, gain=0.795186
+  p=0.5: expl=0.743263, gain=2.36247
+  p=1: expl=2.56473, gain=2.65957
+TestCDRNRLeduc PASSED
+TestGoofspiel_p0_vs_Gadget...
+  [P0] Gadget: expl=0.0383069, gain=0.602946
+  [P0] CDRNR:  expl=0.029828, gain=0.603644
+  [P1] Gadget: expl=0.0383069, gain=0.599217
+  [P1] CDRNR:  expl=0.0203333, gain=0.594008
+TestGoofspiel_p0_vs_Gadget PASSED
+TestGoofspiel_p1_vs_BR...
+  [P0] BR:    gain=0.708333
+  [P0] CDRNR: gain=0.708316, expl=0.999944
+  [P0] Gain diff: 1.75348e-05
+  [P1] BR:    gain=0.708333
+  [P1] CDRNR: gain=0.708316, expl=0.999911
+  [P1] Gain diff: 1.75348e-05
+TestGoofspiel_p1_vs_BR PASSED
+TestLeduc_p0_vs_Gadget...
+  [P0] Gadget: expl=0.00166266, gain=0.597123
+  [P0] CDRNR:  expl=0.00286424, gain=0.61106
+  [P1] Gadget: expl=0.00166266, gain=0.789127
+  [P1] CDRNR:  expl=0.00356103, gain=0.790618
+TestLeduc_p0_vs_Gadget PASSED
+TestLeduc_p1_vs_BR...
+  [P0] BR:    gain=2.0875
+  [P0] CDRNR: gain=2.08748, expl=3.09953
+  [P0] Gain diff: 2.43493e-05
+  [P1] BR:    gain=2.65972
+  [P1] CDRNR: gain=2.65967, expl=2.56586
+  [P1] Gain diff: 5.61746e-05
+TestLeduc_p1_vs_BR PASSED
+TestABD_p1_ExactBR...
+  Kuhn [P0] BR=0.5, ABD=0.499999, diff=1.33069e-06
+  Kuhn [P1] BR=0.416667, ABD=0.416662, diff=4.32468e-06
+  Goofspiel [P0] BR=0.708333, ABD=0.708327, diff=6.32093e-06
+  Goofspiel [P1] BR=0.708333, ABD=0.708327, diff=6.32093e-06
+  Leduc [P0] BR=2.0875, ABD=2.08748, diff=2.43493e-05
+  Leduc [P1] BR=2.65972, ABD=2.65967, diff=5.61746e-05
+TestABD_p1_ExactBR PASSED
+
+All tests passed!

@@ -9,3 +9,4 @@ macro(add_paper_executable NAME SOURCES)
 endmacro()
 
 add_paper_executable(dlr_main dlr_main.cc)
+add_paper_executable(exact_sweep exact_sweep_main.cc)

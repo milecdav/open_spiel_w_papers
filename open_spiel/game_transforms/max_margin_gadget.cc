@@ -259,6 +259,9 @@ std::vector<Action> MaxMarginGadgetState::LegalActions() const {
 }
 
 std::vector<Action> MaxMarginGadgetState::LegalActions(Player player) const {
+  if (phase_ == Phase::kSubgame) {
+    return state_->LegalActions(player);
+  }
   if (player == CurrentPlayer()) {
     return LegalActions();
   }

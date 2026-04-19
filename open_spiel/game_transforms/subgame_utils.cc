@@ -166,6 +166,18 @@ void CollectInfoStateStringsBeforeDepthRecursive(
       CollectInfoStateStringsBeforeDepthRecursive(*child, current_depth, depth_limit,
                                       result);
     }
+  } else if (state.IsSimultaneousNode()) {
+    if (current_depth < depth_limit) {
+      for (int pl = 0; pl < state.NumPlayers(); ++pl) {
+        result[pl].insert(state.InformationStateString(pl));
+      }
+    }
+    for (Action action : state.LegalActions()) {
+      auto child = state.Clone();
+      child->ApplyAction(action);
+      CollectInfoStateStringsBeforeDepthRecursive(*child, current_depth + 1, depth_limit,
+                                      result);
+    }
   } else {
     if (current_depth < depth_limit) {
       Player player = state.CurrentPlayer();
@@ -193,6 +205,18 @@ void CollectInfoStateStringsBeforeRoundRecursive(
       child->ApplyAction(action);
       CollectInfoStateStringsBeforeRoundRecursive(
           *child, current_round + 1, target_round, result);
+    }
+  } else if (state.IsSimultaneousNode()) {
+    if (current_round < target_round) {
+      for (int pl = 0; pl < state.NumPlayers(); ++pl) {
+        result[pl].insert(state.InformationStateString(pl));
+      }
+    }
+    for (Action action : state.LegalActions()) {
+      auto child = state.Clone();
+      child->ApplyAction(action);
+      CollectInfoStateStringsBeforeRoundRecursive(
+          *child, current_round, target_round, result);
     }
   } else {
     if (current_round < target_round) {

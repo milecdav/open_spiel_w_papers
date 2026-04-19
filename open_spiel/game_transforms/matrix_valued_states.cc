@@ -1111,6 +1111,35 @@ CreateMVSGameWithSubtreePureStrategies(
 // MVS Utility Functions
 // ============================================================================
 
+// A policy wrapper that falls back to uniform when the primary policy has no
+// entry at a given (state, player). Used to handle degenerate (e.g. p=1) LP
+// solutions where some info states have zero reach and are missing.
+class MVSUniformFallbackPolicy : public Policy {
+ public:
+  explicit MVSUniformFallbackPolicy(const Policy& primary) : primary_(primary) {}
+
+  ActionsAndProbs GetStatePolicy(const State& state,
+                                 Player player) const override {
+    auto result = primary_.GetStatePolicy(state, player);
+    if (!result.empty()) return result;
+    // Fallback: uniform over legal actions for this player.
+    std::vector<Action> legal = state.LegalActions(player);
+    if (legal.empty()) return {};
+    ActionsAndProbs uniform;
+    uniform.reserve(legal.size());
+    double prob = 1.0 / legal.size();
+    for (Action a : legal) uniform.push_back({a, prob});
+    return uniform;
+  }
+
+  ActionsAndProbs GetStatePolicy(const std::string& info_state) const override {
+    return primary_.GetStatePolicy(info_state);
+  }
+
+ private:
+  const Policy& primary_;
+};
+
 std::unordered_map<std::string, double> ExtractCFVsFromMVSSolution(
     const MVSGameWithSubtreePureStrategies& mvs_game,
     const Policy& mvs_policy,
@@ -1129,7 +1158,8 @@ std::unordered_map<std::string, double> ExtractCFVsFromMVSSolution(
       const State& underlying = mvs_state->GetUnderlyingState();
       std::string info_state = underlying.InformationStateString(player);
 
-      auto value = algorithms::ExpectedReturns(state, mvs_policy, -1, true);
+      MVSUniformFallbackPolicy mvs_fallback(mvs_policy);
+      auto value = algorithms::ExpectedReturns(state, mvs_fallback, -1, false);
 
       double opponent_reach = (player == 0) ? reach_p1 : reach_p0;
       cfvs[info_state] += opponent_reach * value[player];

@@ -221,6 +221,9 @@ std::vector<Action> GadgetState::LegalActions() const {
 }
 
 std::vector<Action> GadgetState::LegalActions(Player player) const {
+  if (phase_ == Phase::kSubgame) {
+    return state_->LegalActions(player);
+  }
   if (player == CurrentPlayer()) {
     return LegalActions();
   }

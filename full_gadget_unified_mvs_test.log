@@ -1,0 +1,141 @@
+TestLeducFixedTrunkEquivalenceLP...
+  Full LP NE exp: 9.99201e-16
+  Lock flow values (v0/v1): -0.0856064 / 0.0856064
+  Lock flow merged exp:     1.16573e-15
+  Groups: 30
+  Group[1]-Group[2] subgame infoset overlap P0/P1: 0/0
+  Prefix replacement exp (1 group): 9.99201e-16
+  Prefix replacement exp (2 groups): 9.99201e-16
+  P0-only resolve exp: 9.99201e-16 (rewrites=0, total_l1=0)
+  P1-only resolve exp: 9.99201e-16 (rewrites=0, total_l1=0)
+  P0-only write summary: keys=0, total_writes=0, keys_written_multiple_times=0, max_writes_per_key=0
+  P1-only write summary: keys=0, total_writes=0, keys_written_multiple_times=0, max_writes_per_key=0
+  Solving Full Gadget trunk + MVS boundaries...
+    res=0 group=1/30 val=-0.0856064
+    res=0 group=2/30 val=-0.0856064
+    res=0 group=3/30 val=-0.0856064
+    res=0 group=4/30 val=-0.0856064
+    res=0 group=5/30 val=-0.0856064
+    res=0 group=6/30 val=-0.0856064
+    res=0 group=7/30 val=-0.0856064
+    res=0 group=8/30 val=-0.0856064
+    res=0 group=9/30 val=-0.0856064
+    res=0 group=10/30 val=-0.0856064
+    res=0 group=11/30 val=-0.0856064
+    res=0 group=12/30 val=-0.0856064
+    res=0 group=13/30 val=-0.0856064
+    res=0 group=14/30 val=-0.0856064
+    res=0 group=15/30 val=-0.0856064
+    res=0 group=16/30 val=-0.0856064
+    res=0 group=17/30 val=-0.0856064
+    res=0 group=18/30 val=-0.0856064
+    res=0 group=19/30 val=-0.0856064
+    res=0 group=20/30 val=-0.0856064
+    res=0 group=21/30 val=-0.0856064
+    res=0 group=22/30 val=-0.0856064
+    res=0 group=23/30 val=-0.0856064
+    res=0 group=24/30 val=-0.0856064
+    res=0 group=25/30 val=-0.0856064
+    res=0 group=26/30 val=-0.0856064
+    res=0 group=27/30 val=-0.0856064
+    res=0 group=28/30 val=-0.0856064
+    res=0 group=29/30 val=-0.0856064
+    res=0 group=30/30 val=-0.0856064
+    res=1 group=1/30 val=0.0856064
+    res=1 group=2/30 val=0.0856064
+    res=1 group=3/30 val=0.0856064
+    res=1 group=4/30 val=0.0856064
+    res=1 group=5/30 val=0.0856064
+    res=1 group=6/30 val=0.0856064
+    res=1 group=7/30 val=0.0856064
+    res=1 group=8/30 val=0.0856064
+    res=1 group=9/30 val=0.0856064
+    res=1 group=10/30 val=0.0856064
+    res=1 group=11/30 val=0.0856064
+    res=1 group=12/30 val=0.0856064
+    res=1 group=13/30 val=0.0856064
+    res=1 group=14/30 val=0.0856064
+    res=1 group=15/30 val=0.0856064
+    res=1 group=16/30 val=0.0856064
+    res=1 group=17/30 val=0.0856064
+    res=1 group=18/30 val=0.0856064
+    res=1 group=19/30 val=0.0856064
+    res=1 group=20/30 val=0.0856064
+    res=1 group=21/30 val=0.0856064
+    res=1 group=22/30 val=0.0856064
+    res=1 group=23/30 val=0.0856064
+    res=1 group=24/30 val=0.0856064
+    res=1 group=25/30 val=0.0856064
+    res=1 group=26/30 val=0.0856064
+    res=1 group=27/30 val=0.0856064
+    res=1 group=28/30 val=0.0856064
+    res=1 group=29/30 val=0.0856064
+    res=1 group=30/30 val=0.0856064
+    Updated subgame infosets P0/P1: 0/0 (of total 450/450)
+  Full Gadget (trunk, MVS) exp: 9.99201e-16
+  Solving Full Gadget path + MVS boundaries...
+    res=0 group=1/30 val=-0.0923215
+    res=0 group=2/30 val=-0.0991802
+    res=0 group=3/30 val=-0.0974797
+    res=0 group=4/30 val=-0.0988788
+    res=0 group=5/30 val=-0.0974104
+    res=0 group=6/30 val=-0.102627
+    res=0 group=7/30 val=-0.0962843
+    res=0 group=8/30 val=-0.0987747
+    res=0 group=9/30 val=-0.102627
+    res=0 group=10/30 val=-0.0974412
+    res=0 group=11/30 val=-0.102829
+    res=0 group=12/30 val=-0.0991675
+    res=0 group=13/30 val=-0.0978953
+    res=0 group=14/30 val=-0.0973078
+    res=0 group=15/30 val=-0.0988788
+    res=0 group=16/30 val=-0.125884
+    res=0 group=17/30 val=-0.098035
+    res=0 group=18/30 val=-0.12181
+    res=0 group=19/30 val=-0.0975377
+    res=0 group=20/30 val=-0.118584
+    res=0 group=21/30 val=-0.125797
+    res=0 group=22/30 val=-0.0913686
+    res=0 group=23/30 val=-0.0992575
+    res=0 group=24/30 val=-0.0978746
+    res=0 group=25/30 val=-0.0937406
+    res=0 group=26/30 val=-0.0984324
+    res=0 group=27/30 val=-0.0964177
+    res=0 group=28/30 val=-0.0935227
+    res=0 group=29/30 val=-0.0948036
+    res=0 group=30/30 val=-0.0979931
+    res=1 group=1/30 val=0.0636416
+    res=1 group=2/30 val=0.0114365
+    res=1 group=3/30 val=0.013321
+    res=1 group=4/30 val=0.0789476
+    res=1 group=5/30 val=-0.0572663
+    res=1 group=6/30 val=0.0659211
+    res=1 group=7/30 val=0.0579226
+    res=1 group=8/30 val=0.0263756
+    res=1 group=9/30 val=0.0659225
+    res=1 group=10/30 val=-0.0255668
+    res=1 group=11/30 val=0.0668668
+    res=1 group=12/30 val=0.0244958
+    res=1 group=13/30 val=0.0388763
+    res=1 group=14/30 val=-0.0255687
+    res=1 group=15/30 val=0.0789494
+    res=1 group=16/30 val=0.0795415
+    res=1 group=17/30 val=0.0474926
+    res=1 group=18/30 val=0.0522806
+    res=1 group=19/30 val=0.0666243
+    res=1 group=20/30 val=0.0521091
+    res=1 group=21/30 val=0.0784718
+    res=1 group=22/30 val=0.0687263
+    res=1 group=23/30 val=0.0396983
+    res=1 group=24/30 val=-0.0575003
+    res=1 group=25/30 val=0.0617294
+    res=1 group=26/30 val=0.0181008
+    res=1 group=27/30 val=0.0578632
+    res=1 group=28/30 val=0.0666243
+    res=1 group=29/30 val=0.0629826
+    res=1 group=30/30 val=0.0636416
+    Updated subgame infosets P0/P1: 0/0 (of total 450/450)
+  Full Gadget (path, MVS) exp:  9.99201e-16
+  Delta trunk-lockflow: -1.66533e-16
+  Delta path-lockflow:  -1.66533e-16
+TestLeducFixedTrunkEquivalenceLP PASSED

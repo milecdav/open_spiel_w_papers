@@ -179,19 +179,38 @@ std::unordered_map<std::string, ActionsAndProbs> PrecomputeModelActionIndices(
 // ResolvingConfig: Unified configuration for subgame resolving
 // ============================================================================
 
+enum class GadgetKind {
+  kUnsafe,
+  kResolving,
+  kMaxMargin,
+  kResolvingByIS,
+  kFullPath,
+  kFullTrunk,
+};
+enum class ResponseKind { kNash, kRNR };
+enum class SolverKind { kCFR, kLP };
+
+// Transitional aliases while migrating callsites and dispatch paths.
 enum class SolverType { kCFR, kRNR, kLP };
-enum class GadgetType { kNone, kResolving, kMaxMargin, kSES, kOX, kFullPath, kFullTrunk };
+enum class GadgetType { kNone, kResolving, kResolvingByIS, kMaxMargin, kSES, kOX, kFullPath, kFullTrunk };
 
 struct ResolvingConfig {
+  // Transitional compatibility fields (currently used by existing dispatch).
   SolverType solver = SolverType::kCFR;
   GadgetType gadget = GadgetType::kResolving;
+
+  // New orthogonal configuration (target API, migration in progress).
+  GadgetKind gadget_kind = GadgetKind::kResolving;
+  ResponseKind response_kind = ResponseKind::kNash;
+  SolverKind solver_kind = SolverKind::kCFR;
   const Policy* opponent_model = nullptr;  // Required for kRNR
   double p = 0.5;                          // RNR restriction parameter
   int target_player = 0;                   // Who we optimize for in RNR
   int cfr_iterations = 500;
-  double alpha = 0.5;  // SES exploitation level [0,1] (only used with kSES)
-  double beta = 5.0;   // OX safety parameter (only used with kOX)
+  bool lock_opponent_in_fixed_branch = true;
   int decomp_depth = -1;  // For Full Gadget: boundary depth (player-action count)
+  double alpha = 0.5;  // Deprecated: SES-only legacy parameter.
+  double beta = 5.0;   // Deprecated: OX-only legacy parameter.
 };
 
 // ============================================================================

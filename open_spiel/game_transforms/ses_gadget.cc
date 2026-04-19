@@ -317,6 +317,9 @@ std::vector<Action> SESGadgetState::LegalActions() const {
 }
 
 std::vector<Action> SESGadgetState::LegalActions(Player player) const {
+  if (phase_ == Phase::kSubgame) {
+    return state_->LegalActions(player);
+  }
   if (player == CurrentPlayer()) {
     return LegalActions();
   }
